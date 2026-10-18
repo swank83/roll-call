@@ -8,7 +8,7 @@
 
    Entry types (all carry personId and at):
      attend   a lesson: classId, cover = free | credit | owed | waived, priceCents (only when owed)
-              waived = old "trains free" tick on a record (no longer offered on screen, still honoured if already set)
+              waived = the person is "Free forever" (a tick on their record, for family and the like): nothing is charged and no free lesson or credit is used
      pack     credits bought: size, amountCents, method
      settle   closes an owed lesson or unpaid gi hire: ref = attend or hire id, how = paid | comp | credit | free (+ amountCents, method, note)
      reverse  undoes any entry: ref = the entry id
@@ -433,7 +433,7 @@
       case 'attend':
         return {
           title: 'Present ' + lessonLabel(e, classesById),
-          detail: e.cover === 'free' ? 'Free lesson' : e.cover === 'waived' ? 'Free to train' : e.cover === 'credit' ? 'Used a pack credit' : 'Owes ' + money(e.priceCents)
+          detail: e.cover === 'free' ? 'Free lesson' : e.cover === 'waived' ? 'Free forever' : e.cover === 'credit' ? 'Used a pack credit' : 'Owes ' + money(e.priceCents)
         };
       case 'pack':
         return { title: e.size + '-pack added', detail: money(e.amountCents) + ' by ' + e.method };

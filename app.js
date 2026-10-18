@@ -6,7 +6,7 @@
 
   var L = window.Ledger;
   var APP = 'portland-takedown-roll-call';
-  var BUILD = 'Version 1.1';
+  var BUILD = 'Version 1.2';
   var EXPECTED_FILES = 8;
   var DB_NAME = 'pt-rollcall';
   var IDLE_LOCK_MS = 5 * 60 * 1000;
@@ -16,7 +16,7 @@
   var db = null;
   var S = {
     settings: L.normaliseSettings(null), people: [], classes: [], ledger: [], meta: {},
-    tab: 'roll', classId: null, rollQ: '', pQ: '', pSource: '', pNoWaiver: false, pNoRelease: false,
+    tab: 'roll', classId: null, rollQ: '', pQ: '', pSource: '', pNoWaiver: false, pNoRelease: false, pArchived: false,
     locked: true, hiddenAt: 0, swError: '', dbError: '', opens: 0, first: 0, prev: null
   };
   var D = { classesById: {}, entriesBy: {}, sums: {} };
@@ -270,6 +270,18 @@
       };
     });
   }
+  /* Delete one person and every ledger entry that belongs to them. Nobody else is touched. */
+  function opDeletePersonAndRecords(id) {
+    return atomic(['people', 'ledger'], function (st, done) {
+      var cur = st('ledger').index('personId').openCursor(IDBKeyRange.only(id));
+      cur.onsuccess = function () {
+        var c = cur.result;
+        if (c) { c.delete(); c.continue(); return; }
+        st('people').delete(id);
+        done(true);
+      };
+    });
+  }
   function opMeta(items) {
     return atomic(['meta'], function (st, done) {
       items.forEach(function (i) { st('meta').put(i); });
@@ -505,7 +517,7 @@
     return 'Last backup file: ' + fmtDateTime(t) + (days >= 1 ? ' (' + days + (days === 1 ? ' day' : ' days') + ' ago)' : ' (today)');
   }
   function balanceText(s, p) {
-    if (p && p.trainsFree) return 'Trains free';
+    if (p && p.trainsFree) return 'Free forever';
     var parts = [];
     if (s.freeLeft > 0) parts.push('Free lessons left: ' + s.freeLeft);
     if (s.credits > 0) parts.push('Credits left: ' + s.credits);
@@ -514,7 +526,7 @@
   }
   function todayText(att, s) {
     if (att.cover === 'free') return 'Free lesson';
-    if (att.cover === 'waived') return 'Free to train';
+    if (att.cover === 'waived') return 'Free forever';
     if (att.cover === 'credit') return 'Pack credit used';
     var st = s && s.settleByAttend[att.id];
     if (!st) return 'Owes ' + L.money(att.priceCents);
@@ -616,9 +628,13 @@
     function fill() {
       list.textContent = '';
       var q = S.rollQ.trim().toLowerCase();
-      var shown = S.people.filter(function (p) { return !q || p.name.toLowerCase().indexOf(q) >= 0; });
+      /* archived people stay off the roll call, unless they were already marked present at this class */
+      var shown = S.people.filter(function (p) {
+        if (p.archived && !D.sums[p.id].attendByClass[cls.id]) return false;
+        return !q || p.name.toLowerCase().indexOf(q) >= 0;
+      });
       if (!S.people.length) { list.appendChild(h('p', { class: 'muted', text: 'No students yet. Tap Add person to enter the first one.' })); return; }
-      if (!shown.length) { list.appendChild(h('p', { class: 'muted', text: 'Nobody matches that name.' })); return; }
+      if (!shown.length) { list.appendChild(h('p', { class: 'muted', text: q ? 'Nobody matches that name.' : 'Everyone is archived. Add a person, or bring someone back from the People tab.' })); return; }
       shown.forEach(function (p) {
         var s = D.sums[p.id];
         var att = s.attendByClass[cls.id];
@@ -626,6 +642,7 @@
         var parts = [];
         if (att) parts.push(todayText(att, s));
         if (hire) parts.push(hireText(hire));
+        if (p.archived) parts.push('Archived');
         if (!(p.trainsFree && att)) parts.push(balanceText(s, p));
         list.appendChild(h('div', { class: 'row' + (att ? ' present' : '') },
           h('button', { type: 'button', class: 'rowmain', 'aria-pressed': att ? 'true' : 'false', 'data-person': p.id, onclick: function () { tapPerson(p, cls); } },
@@ -655,26 +672,31 @@
     srcSel.value = S.pSource;
     var noW = h('input', { type: 'checkbox', checked: S.pNoWaiver });
     var noR = h('input', { type: 'checkbox', checked: S.pNoRelease });
+    var nArch = S.people.filter(function (p) { return p.archived; }).length;
+    if (!nArch) S.pArchived = false;
+    var showArch = h('input', { type: 'checkbox', checked: S.pArchived });
     var count = h('p', { class: 'muted small' });
     var list = h('div', { class: 'rows' });
     function fill() {
       list.textContent = '';
       var q = S.pQ.trim().toLowerCase();
       var shown = S.people.filter(function (p) {
+        if (p.archived && !S.pArchived) return false;
         if (q && p.name.toLowerCase().indexOf(q) < 0) return false;
         if (S.pSource && p.source !== S.pSource) return false;
         if (S.pNoWaiver && p.waiver && p.waiver.signed) return false;
         if (S.pNoRelease && p.release && p.release.signed) return false;
         return true;
       });
-      count.textContent = 'Showing ' + shown.length + ' of ' + S.people.length;
+      count.textContent = 'Showing ' + shown.length + ' of ' + (S.pArchived ? S.people.length : S.people.length - nArch) +
+        (nArch && !S.pArchived ? ' · ' + nArch + ' archived hidden' : '');
       if (!shown.length) list.appendChild(h('p', { class: 'muted', text: S.people.length ? 'Nobody matches those filters.' : 'No students yet.' }));
       shown.forEach(function (p) {
         var s = D.sums[p.id];
         list.appendChild(h('div', { class: 'row' },
           h('button', { type: 'button', class: 'rowmain', onclick: function () { openPerson(p.id); } },
             h('span', { class: 'rname', text: p.name }),
-            h('span', { class: 'rsub', text: labelRate(p.rate) + (p.trainsFree ? ' · trains free' : '') + (p.under18 ? ' · under 18' : '') + ' · ' + s.attendedCount + (s.attendedCount === 1 ? ' class' : ' classes') + (s.lastDate ? ' · last ' + L.dateLabel(s.lastDate) : '') }),
+            h('span', { class: 'rsub', text: labelRate(p.rate) + (p.trainsFree ? ' · free forever' : '') + (p.archived ? ' · archived' : '') + (p.under18 ? ' · under 18' : '') + ' · ' + s.attendedCount + (s.attendedCount === 1 ? ' class' : ' classes') + (s.lastDate ? ' · last ' + L.dateLabel(s.lastDate) : '') }),
             h('span', { class: 'rsub', text: 'Injury waiver: ' + (p.waiver && p.waiver.signed ? 'yes' : 'no') + ' · Model release: ' + (p.release && p.release.signed ? 'yes' : 'no') + ' · ' + labelSource(p.source) })),
           h('span')));
       });
@@ -683,11 +705,13 @@
     srcSel.addEventListener('change', function () { S.pSource = srcSel.value; fill(); });
     noW.addEventListener('change', function () { S.pNoWaiver = noW.checked; fill(); });
     noR.addEventListener('change', function () { S.pNoRelease = noR.checked; fill(); });
+    showArch.addEventListener('change', function () { S.pArchived = showArch.checked; fill(); });
     v.appendChild(h('section', { class: 'card' },
       h('div', { class: 'pick' }, search, h('button', { type: 'button', class: 'btn', onclick: function () { openPersonForm(null); } }, 'Add person')),
       h('div', { class: 'filters' }, srcSel,
         h('label', { class: 'check' }, noW, 'No injury waiver'),
-        h('label', { class: 'check' }, noR, 'No model release')),
+        h('label', { class: 'check' }, noR, 'No model release'),
+        nArch ? h('label', { class: 'check' }, showArch, 'Show archived people') : null),
       count));
     v.appendChild(list);
     fill();
@@ -711,7 +735,7 @@
 
     wrap.appendChild(h('section', { class: 'card' }, h('h2', { text: 'Right now' }),
       h('dl', { class: 'facts' },
-        p.trainsFree ? fact('Free to train', 'Yes, never charged') : null,
+        p.trainsFree ? fact('Free forever', 'Yes, never charged') : null,
         fact('Free lessons left', s.freeLeft + ' of ' + s.freeAllowed),
         fact('Credits left', String(s.credits)),
         fact('Owes', s.owedCents > 0 ? L.money(s.owedCents) + ' (' + s.owed.length + (s.owed.length === 1 ? ' lesson)' : ' lessons)') : 'Nothing'),
@@ -790,14 +814,72 @@
           h('span', { class: 'when', text: fmtDateTime(r.entry.at) + (r.undone ? ' · undone' : '') }));
       })) : h('p', { class: 'muted', text: 'Nothing recorded yet.' })));
 
-    if (!hist.length) {
-      wrap.appendChild(h('button', { type: 'button', class: 'btn danger', onclick: function () {
+    var leave = h('section', { class: 'card' }, h('h2', { text: 'Archive or delete' }));
+    var leaveBtns = [];
+    if (!p.archived) {
+      leave.appendChild(h('p', { class: 'hint', text: 'Archive hides them from roll call and the People list but keeps every record. You can bring them back any time. Use it for people who have left.' }));
+      leaveBtns.push(h('button', { type: 'button', class: 'btn alt', onclick: function () { archiveTap(p, true); } }, 'Archive this person'));
+    }
+    if (hist.length) {
+      leave.appendChild(h('p', { class: 'hint', text: 'Delete for good removes only this person and everything recorded for them. It cannot be undone.' }));
+      leaveBtns.push(h('button', { type: 'button', class: 'btn danger', onclick: function () { deleteForever(p); } }, 'Delete for good'));
+    } else {
+      leave.appendChild(h('p', { class: 'hint', text: 'Nothing has been recorded for this person, so they can be removed safely.' }));
+      leaveBtns.push(h('button', { type: 'button', class: 'btn danger', onclick: function () {
         confirmBox('Remove ' + p.name + '?', 'Nothing has been recorded for this person, so they can be removed safely.', 'Remove', function () {
           enqueue(function () { return opDeletePerson(p.id).then(function () { popSheet(); return reload(); }); });
         }, true);
       } }, 'Remove this person'));
     }
+    leave.appendChild(h('div', { class: 'acts' }, leaveBtns));
+    wrap.appendChild(leave);
+
+    if (p.archived) {
+      wrap.insertBefore(h('section', { class: 'card' }, h('h2', { text: 'Archived' }),
+        h('p', { text: 'Hidden from roll call and the People list. Their records are kept.' }),
+        h('div', { class: 'acts' }, h('button', { type: 'button', class: 'btn', onclick: function () { archiveTap(p, false); } }, 'Bring back'))), wrap.firstChild);
+    }
     return wrap;
+  }
+
+  function archiveTap(p, on) {
+    function go() {
+      enqueue(function () {
+        return opSavePerson(Object.assign({}, p, { archived: on })).then(reload).then(function () {
+          if (on) { popSheet(); toast(p.name + ' archived. Tick "Show archived people" on the People tab to find them.'); }
+          else toast(p.name + ' is back on the list.');
+        }).catch(function (e) { toast(e.message); return reload(); });
+      });
+    }
+    var s = D.sums[p.id];
+    var owing = s.owedCents + s.hireOwedCents;
+    if (on && owing > 0) {
+      confirmBox('Archive ' + p.name + '?', p.name + ' still owes ' + L.money(owing) + '. Archiving keeps that on record, but they will no longer show on roll call. Archive anyway?', 'Archive', go);
+    } else go();
+  }
+  function deleteForever(p) {
+    var es = D.entriesBy[p.id] || [];
+    var s = D.sums[p.id];
+    var typed = h('input', { type: 'text', autocomplete: 'off', autocapitalize: 'characters' });
+    modal({
+      title: 'Delete ' + p.name + ' for good?',
+      body: h('div', { class: 'stack' },
+        h('p', { text: 'This removes ' + p.name + ' and all ' + es.length + (es.length === 1 ? ' entry' : ' entries') + ' recorded for them (' + s.attendedCount + (s.attendedCount === 1 ? ' class' : ' classes') + ' attended, plus any packs, payments, gi hire and gradings). Nobody else is touched. It cannot be undone.' }),
+        h('p', { class: 'hint', text: 'If they have just left the club, use Archive instead, which keeps their records. If you are not sure, take a backup first in Settings.' }),
+        labelled('Type DELETE to continue', typed)),
+      actions: [
+        { label: 'Delete for good', kind: 'danger', onclick: function (close) {
+          if (typed.value.trim().toUpperCase() !== 'DELETE') { toast('Type DELETE to confirm.'); return; }
+          close();
+          enqueue(function () {
+            return opDeletePersonAndRecords(p.id).then(function () { popSheet(); return reload(); })
+              .then(function () { toast(p.name + ' deleted.'); })
+              .catch(function (e) { toast(e.message); return reload(); });
+          });
+        } },
+        { label: 'Cancel', kind: 'alt', onclick: function (close) { close(); } }
+      ]
+    });
   }
   function fact(k, v) { return h('div', {}, h('dt', { text: k }), h('dd', { text: v })); }
 
@@ -1139,8 +1221,8 @@
         h('section', { class: 'card' },
           labelled('Name', name), labelled('Rate', rate), h('label', { class: 'check' }, under, 'Under 18'), gBox, cardBox,
           labelled('How they found the club', source),
-          p.trainsFree ? h('label', { class: 'check' }, trainsFree, 'Trains free, never charged (old setting)') : null,
-          p.trainsFree ? h('p', { class: 'hint', text: 'This is the old always-free tick. Untick it to put them back on normal prices. To give a set number of free lessons instead, use "Give free lessons" on their page.' }) : null),
+          h('label', { class: 'check' }, trainsFree, 'Free forever (never charged)'),
+          h('p', { class: 'hint', text: 'For people who never pay, like family. Their lessons still count as attended, and no free lesson or pack credit is used. For just a set number of free lessons, use "Give free lessons" on their page instead.' })),
         h('section', { class: 'card' }, h('h2', { text: 'Forms' }), waiver.el, release.el,
           h('p', { class: 'hint', text: 'For under-18s, a parent or guardian signs both forms and the record says who.' })),
         h('section', { class: 'card' }, h('h2', { text: 'Memberships' }), samboG.el, vajuG.el,
@@ -1219,7 +1301,7 @@
       var s = D.sums[p.id];
       var marks = classes.map(function (c) { return !c.cancelled && !!s.attendByClass[c.id]; });
       return { person: p, marks: marks };
-    });
+    }).filter(function (r) { return !r.person.archived || r.marks.some(Boolean); });   /* archived people only appear for periods they attended */
     return { classes: classes, rows: rows };
   }
   function checkRange(from, to) {
