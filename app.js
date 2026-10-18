@@ -1,12 +1,12 @@
 /* Portland Takedown roll call, Stage 1.
    Everything is stored on this device in IndexedDB. Nothing is sent anywhere.
-   The rules for lessons, credits and what is owed live in ledger.js. */
+   The rules for lessons and pack classes live in ledger.js. */
 (function () {
   'use strict';
 
   var L = window.Ledger;
   var APP = 'portland-takedown-roll-call';
-  var BUILD = 'Version 1.2';
+  var BUILD = 'Version 1.3';
   var EXPECTED_FILES = 8;
   var DB_NAME = 'pt-rollcall';
   var IDLE_LOCK_MS = 5 * 60 * 1000;
@@ -16,7 +16,7 @@
   var db = null;
   var S = {
     settings: L.normaliseSettings(null), people: [], classes: [], ledger: [], meta: {},
-    tab: 'roll', classId: null, rollQ: '', pQ: '', pSource: '', pNoWaiver: false, pNoRelease: false, pArchived: false,
+    tab: 'roll', classId: null, rollQ: '', pQ: '', pSource: '', pNoWaiver: false, pNoRelease: false, pArchived: false, pEmergency: false,
     locked: true, hiddenAt: 0, swError: '', dbError: '', opens: 0, first: 0, prev: null
   };
   var D = { classesById: {}, entriesBy: {}, sums: {} };
@@ -46,10 +46,7 @@
     for (var i = 2; i < arguments.length; i++) append(el, arguments[i]);
     return el;
   }
-  function labelRate(r) { return r === 'adult' ? 'Adult' : r === 'junior' ? 'Junior' : 'Concession'; }
   function labelSource(s) { return s === 'cross-trainer' ? 'Cross-trainer' : s ? s.charAt(0).toUpperCase() + s.slice(1) : 'Not set'; }
-  function labelMethod(m) { return m.charAt(0).toUpperCase() + m.slice(1); }
-  function dollars(cents) { return (cents / 100).toFixed(2).replace(/\.00$/, ''); }
   function fmtDateTime(ms) {
     var d = new Date(ms);
     return DAYS[d.getDay()] + ' ' + d.getDate() + ' ' + MONTHS[d.getMonth()] + ', ' +
@@ -146,7 +143,6 @@
   function runPlan(plan, st, done, fail) {
     if (!plan.ok) {
       var e = new Error(plan.reason);
-      e.needsConfirm = !!plan.needsConfirm;
       fail(e);
       return;
     }
@@ -154,31 +150,17 @@
     done(plan);
   }
 
-  function opTap(pid, cid, confirmed) {
+  function opTap(pid, cid) {
     return atomic(['people', 'classes', 'ledger'], function (st, done, fail) {
       withPerson(st, pid, fail, function (p, es, byId) {
-        runPlan(L.planTap(p, es, cid, byId, S.settings, !!confirmed, Date.now()), st, done, fail);
+        runPlan(L.planTap(p, es, cid, byId, Date.now()), st, done, fail);
       });
     });
   }
-  function opPack(pid, size, cents, method) {
+  function opPack(pid, size) {
     return atomic(['people', 'classes', 'ledger'], function (st, done, fail) {
       withPerson(st, pid, fail, function (p, es) {
-        runPlan(L.planPack(p, es, size, cents, method, S.settings, Date.now()), st, done, fail);
-      });
-    });
-  }
-  function opSettle(pid, attendId, how, opts) {
-    return atomic(['people', 'classes', 'ledger'], function (st, done, fail) {
-      withPerson(st, pid, fail, function (p, es, byId) {
-        runPlan(L.planSettle(p, es, attendId, how, opts, byId, Date.now()), st, done, fail);
-      });
-    });
-  }
-  function opCover(pid) {
-    return atomic(['people', 'classes', 'ledger'], function (st, done, fail) {
-      withPerson(st, pid, fail, function (p, es, byId) {
-        runPlan(L.planCoverOwed(p, es, byId, Date.now()), st, done, fail);
+        runPlan(L.planPack(p, es, size, Date.now()), st, done, fail);
       });
     });
   }
@@ -189,10 +171,10 @@
       });
     });
   }
-  function opHire(pid, cid, method) {
+  function opHire(pid, cid) {
     return atomic(['people', 'classes', 'ledger'], function (st, done, fail) {
       withPerson(st, pid, fail, function (p, es, byId) {
-        runPlan(L.planHire(p, es, cid, byId, S.settings, method, Date.now()), st, done, fail);
+        runPlan(L.planHire(p, es, cid, byId, Date.now()), st, done, fail);
       });
     });
   }
@@ -475,7 +457,7 @@
     modal({
       title: 'Forgot the PIN?',
       body: h('div', { class: 'stack' },
-        h('p', { text: 'The only way in is to erase everything on this iPad: students, records, prices and the PIN. Then you set a new PIN and restore your latest backup file.' }),
+        h('p', { text: 'The only way in is to erase everything on this iPad: students, records and the PIN. Then you set a new PIN and restore your latest backup file.' }),
         h('p', { class: 'hint', text: 'If you have no backup, the records on this iPad cannot be recovered. Type ERASE to continue.' }), typed),
       actions: [
         { label: 'Erase everything', kind: 'danger', onclick: function (close) {
@@ -520,20 +502,22 @@
     if (p && p.trainsFree) return 'Free forever';
     var parts = [];
     if (s.freeLeft > 0) parts.push('Free lessons left: ' + s.freeLeft);
-    if (s.credits > 0) parts.push('Credits left: ' + s.credits);
-    if (s.owedCents > 0) parts.push('Owes ' + L.money(s.owedCents));
-    return parts.length ? parts.join(' · ') : 'No credits left';
+    if (s.credits > 0) parts.push('Pack classes left: ' + s.credits);
+    return parts.join(' · ');
   }
   function todayText(att, s) {
     if (att.cover === 'free') return 'Free lesson';
     if (att.cover === 'waived') return 'Free forever';
-    if (att.cover === 'credit') return 'Pack credit used';
-    var st = s && s.settleByAttend[att.id];
-    if (!st) return 'Owes ' + L.money(att.priceCents);
-    if (st.how === 'paid') return 'Paid ' + L.money(st.amountCents);
-    if (st.how === 'comp') return 'Comped';
-    if (st.how === 'credit') return 'Covered by a pack credit';
-    return 'Covered by a free lesson';
+    if (att.cover === 'credit') return 'Pack class used';
+    var st = s && s.settleByAttend[att.id];          // older records: a lesson that was covered afterwards
+    if (st && st.how === 'free') return 'Free lesson';
+    if (st && st.how === 'credit') return 'Pack class used';
+    return '';
+  }
+  function emergencyPresent(classId) {
+    var n = 0;
+    S.people.forEach(function (p) { if (p.emergencyWorker && D.sums[p.id] && D.sums[p.id].attendByClass[classId]) n++; });
+    return n;
   }
   function presentCount(classId) {
     var n = 0;
@@ -554,34 +538,14 @@
     var now = Date.now();
     if (lastTap[p.id] && now - lastTap[p.id] < 500) return;
     lastTap[p.id] = now;
-    var UNDO_MSG = 'Money was recorded against this lesson (a payment, a covered lesson or gi hire). Undoing it undoes those too. If you took money, refund it yourself.';
-    function go(confirmed) {
-      enqueue(function () {
-        return opTap(p.id, cls.id, confirmed).then(function (plan) {
-          return reload().then(function () {
-            if (plan.info.action === 'attend' && plan.info.cover === 'owed') toast(p.name + ' owes ' + L.money(plan.info.priceCents) + '.');
-          });
-        }).catch(function (e) {
-          if (e.needsConfirm) {
-            confirmBox('Undo this lesson?', UNDO_MSG, 'Undo lesson', function () { go(true); }, true);
-            return reload();
-          }
-          toast(e.message);
-          return reload();
-        });
-      });
-    }
-    var pre = L.planTap(p, D.entriesBy[p.id] || [], cls.id, D.classesById, S.settings, false, Date.now());
-    if (!pre.ok && pre.needsConfirm) {
-      confirmBox('Undo this lesson?', UNDO_MSG, 'Undo lesson', function () { go(true); }, true);
-      return;
-    }
-    go(false);
+    enqueue(function () {
+      return opTap(p.id, cls.id).then(reload).catch(function (e) { toast(e.message); return reload(); });
+    });
   }
   function cancelClass(cls) {
     var n = presentCount(cls.id);
     confirmBox('Cancel this class?',
-      n ? n + (n === 1 ? ' person is' : ' people are') + ' marked present. Cancelling undoes them, so nobody is charged or counted.' : 'Nobody is charged or counted for a cancelled class.',
+      n ? n + (n === 1 ? ' person is' : ' people are') + ' marked present. Cancelling undoes them, so nobody is counted.' : 'Nobody is counted for a cancelled class.',
       'Cancel the class', function () {
         enqueue(function () { return opCancelClass(cls.id).then(reload).then(function () { toast('Class cancelled.'); }); });
       }, true);
@@ -614,7 +578,7 @@
       return v;
     }
 
-    var summary = cls.cancelled ? 'Cancelled. Nobody is charged and nothing is counted.' : presentCount(cls.id) + ' present';
+    var summary = cls.cancelled ? 'Cancelled. Nothing is counted.' : presentCount(cls.id) + ' present' + (emergencyPresent(cls.id) ? ' · ' + emergencyPresent(cls.id) + (emergencyPresent(cls.id) === 1 ? ' emergency worker' : ' emergency workers') : '');
     v.appendChild(h('section', { class: 'card' },
       h('div', { class: 'chead' },
         h('div', {}, h('h2', { text: 'Roll call' }), h('p', { class: 'big2', text: L.dateLabel(cls.date) }), h('p', { class: 'muted', text: summary })),
@@ -640,10 +604,12 @@
         var att = s.attendByClass[cls.id];
         var hire = s.hireByClass[cls.id];
         var parts = [];
-        if (att) parts.push(todayText(att, s));
+        if (att) { var tt = todayText(att, s); if (tt) parts.push(tt); }
         if (hire) parts.push(hireText(hire));
         if (p.archived) parts.push('Archived');
-        if (!(p.trainsFree && att)) parts.push(balanceText(s, p));
+        var bal = (p.trainsFree && att) ? '' : balanceText(s, p);
+        if (bal) parts.push(bal);
+        if (p.emergencyWorker) parts.push('Emergency worker');
         list.appendChild(h('div', { class: 'row' + (att ? ' present' : '') },
           h('button', { type: 'button', class: 'rowmain', 'aria-pressed': att ? 'true' : 'false', 'data-person': p.id, onclick: function () { tapPerson(p, cls); } },
             h('span', { class: 'rname', text: p.name }),
@@ -675,6 +641,7 @@
     var nArch = S.people.filter(function (p) { return p.archived; }).length;
     if (!nArch) S.pArchived = false;
     var showArch = h('input', { type: 'checkbox', checked: S.pArchived });
+    var emergOnly = h('input', { type: 'checkbox', checked: S.pEmergency });
     var count = h('p', { class: 'muted small' });
     var list = h('div', { class: 'rows' });
     function fill() {
@@ -682,6 +649,7 @@
       var q = S.pQ.trim().toLowerCase();
       var shown = S.people.filter(function (p) {
         if (p.archived && !S.pArchived) return false;
+        if (S.pEmergency && !p.emergencyWorker) return false;
         if (q && p.name.toLowerCase().indexOf(q) < 0) return false;
         if (S.pSource && p.source !== S.pSource) return false;
         if (S.pNoWaiver && p.waiver && p.waiver.signed) return false;
@@ -696,7 +664,7 @@
         list.appendChild(h('div', { class: 'row' },
           h('button', { type: 'button', class: 'rowmain', onclick: function () { openPerson(p.id); } },
             h('span', { class: 'rname', text: p.name }),
-            h('span', { class: 'rsub', text: labelRate(p.rate) + (p.trainsFree ? ' · free forever' : '') + (p.archived ? ' · archived' : '') + (p.under18 ? ' · under 18' : '') + ' · ' + s.attendedCount + (s.attendedCount === 1 ? ' class' : ' classes') + (s.lastDate ? ' · last ' + L.dateLabel(s.lastDate) : '') }),
+            h('span', { class: 'rsub', text: [p.emergencyWorker ? 'Emergency worker' : null, p.trainsFree ? 'Free forever' : null, p.archived ? 'Archived' : null, p.under18 ? 'Under 18' : null, s.attendedCount + (s.attendedCount === 1 ? ' class' : ' classes'), s.lastDate ? 'last ' + L.dateLabel(s.lastDate) : null].filter(Boolean).join(' · ') }),
             h('span', { class: 'rsub', text: 'Injury waiver: ' + (p.waiver && p.waiver.signed ? 'yes' : 'no') + ' · Model release: ' + (p.release && p.release.signed ? 'yes' : 'no') + ' · ' + labelSource(p.source) })),
           h('span')));
       });
@@ -706,11 +674,13 @@
     noW.addEventListener('change', function () { S.pNoWaiver = noW.checked; fill(); });
     noR.addEventListener('change', function () { S.pNoRelease = noR.checked; fill(); });
     showArch.addEventListener('change', function () { S.pArchived = showArch.checked; fill(); });
+    emergOnly.addEventListener('change', function () { S.pEmergency = emergOnly.checked; fill(); });
     v.appendChild(h('section', { class: 'card' },
       h('div', { class: 'pick' }, search, h('button', { type: 'button', class: 'btn', onclick: function () { openPersonForm(null); } }, 'Add person')),
       h('div', { class: 'filters' }, srcSel,
         h('label', { class: 'check' }, noW, 'No injury waiver'),
         h('label', { class: 'check' }, noR, 'No model release'),
+        h('label', { class: 'check' }, emergOnly, 'Emergency workers only'),
         nArch ? h('label', { class: 'check' }, showArch, 'Show archived people') : null),
       count));
     v.appendChild(list);
@@ -731,43 +701,17 @@
   function personBody(p) {
     var s = D.sums[p.id];
     var wrap = h('div', { class: 'stack' });
-    var packSizes = L.packSizes(S.settings, p.rate);
-
     wrap.appendChild(h('section', { class: 'card' }, h('h2', { text: 'Right now' }),
       h('dl', { class: 'facts' },
-        p.trainsFree ? fact('Free forever', 'Yes, never charged') : null,
+        p.trainsFree ? fact('Free forever', 'Yes') : null,
         fact('Free lessons left', s.freeLeft + ' of ' + s.freeAllowed),
-        fact('Credits left', String(s.credits)),
-        fact('Owes', s.owedCents > 0 ? L.money(s.owedCents) + ' (' + s.owed.length + (s.owed.length === 1 ? ' lesson)' : ' lessons)') : 'Nothing'),
-        s.hireOwedCents > 0 ? fact('Gi hire owed', L.money(s.hireOwedCents)) : null,
+        fact('Pack classes left', String(s.credits)),
         fact('Classes attended', String(s.attendedCount)),
         fact('Last attended', s.lastDate ? L.dateLabel(s.lastDate) : 'Not yet')),
       h('div', { class: 'acts' },
-        h('button', { type: 'button', class: 'btn', disabled: packSizes.length ? null : true, onclick: function () { addPackModal(p.id); } }, 'Add a pack'),
+        h('button', { type: 'button', class: 'btn', onclick: function () { addPackModal(p.id); } }, 'Add a pack'),
         h('button', { type: 'button', class: 'btn alt', onclick: function () { giftModal(p.id); } }, 'Give free lessons'),
-        h('button', { type: 'button', class: 'btn alt', onclick: function () { openPersonForm(p); } }, 'Edit details')),
-      packSizes.length ? null : h('p', { class: 'hint', text: 'The concession rate has no packs. It is a flat price per session.' })));
-
-    if (s.owed.length || s.hireOwed.length) {
-      wrap.appendChild(h('section', { class: 'card' }, h('h2', { text: 'Owed' }),
-        s.owed.map(function (o) {
-          return h('div', { class: 'owed' },
-            h('p', {}, h('strong', { text: L.dateLabel(o.date) }), ' · owes ' + L.money(o.priceCents)),
-            h('div', { class: 'acts' },
-              h('button', { type: 'button', class: 'btn small', onclick: function () { paidModal(p.id, o); } }, 'Paid'),
-              h('button', { type: 'button', class: 'btn alt small', onclick: function () { compModal(p.id, o); } }, 'Comp'),
-              s.credits > 0 ? h('button', { type: 'button', class: 'btn alt small', onclick: function () { settleNow(p.id, o.attendId, 'credit', {}, 'Covered by a pack credit.'); } }, 'Use a pack credit') : null,
-              s.freeLeft > 0 ? h('button', { type: 'button', class: 'btn alt small', onclick: function () { settleNow(p.id, o.attendId, 'free', {}, 'Covered by a free lesson.'); } }, 'Use a free lesson') : null));
-        }),
-        s.hireOwed.map(function (o) {
-          var target = { attendId: o.hireId, date: o.date, priceCents: o.priceCents, what: 'Gi hire' };
-          return h('div', { class: 'owed' },
-            h('p', {}, h('strong', { text: 'Gi hire ' + L.dateLabel(o.date) }), ' · owes ' + L.money(o.priceCents)),
-            h('div', { class: 'acts' },
-              h('button', { type: 'button', class: 'btn small', onclick: function () { paidModal(p.id, target); } }, 'Paid'),
-              h('button', { type: 'button', class: 'btn alt small', onclick: function () { compModal(p.id, target); } }, 'Comp')));
-        })));
-    }
+        h('button', { type: 'button', class: 'btn alt', onclick: function () { openPersonForm(p); } }, 'Edit details'))));
 
     wrap.appendChild(h('section', { class: 'card' }, h('h2', { text: 'Forms' }),
       h('dl', { class: 'facts' },
@@ -795,7 +739,7 @@
       })) : null,
       h('div', { class: 'acts' }, h('button', { type: 'button', class: 'btn alt', onclick: function () { gradingModal(p.id); } }, 'Add grading'))));
 
-    var about = [fact('Rate', labelRate(p.rate) + (p.rate === 'concession' ? (p.cardChecked ? ' (card checked)' : ' (card not checked)') : '')),
+    var about = [fact('Emergency worker', p.emergencyWorker ? 'Yes' + (p.cardChecked ? ', ID checked' : ', ID not checked') : 'No'),
       fact('Under 18', p.under18 ? 'Yes' : 'No')];
     if (p.under18) {
       about.push(fact('Guardian', p.guardianName || 'Not recorded'));
@@ -851,11 +795,7 @@
         }).catch(function (e) { toast(e.message); return reload(); });
       });
     }
-    var s = D.sums[p.id];
-    var owing = s.owedCents + s.hireOwedCents;
-    if (on && owing > 0) {
-      confirmBox('Archive ' + p.name + '?', p.name + ' still owes ' + L.money(owing) + '. Archiving keeps that on record, but they will no longer show on roll call. Archive anyway?', 'Archive', go);
-    } else go();
+    go();
   }
   function deleteForever(p) {
     var es = D.entriesBy[p.id] || [];
@@ -864,7 +804,7 @@
     modal({
       title: 'Delete ' + p.name + ' for good?',
       body: h('div', { class: 'stack' },
-        h('p', { text: 'This removes ' + p.name + ' and all ' + es.length + (es.length === 1 ? ' entry' : ' entries') + ' recorded for them (' + s.attendedCount + (s.attendedCount === 1 ? ' class' : ' classes') + ' attended, plus any packs, payments, gi hire and gradings). Nobody else is touched. It cannot be undone.' }),
+        h('p', { text: 'This removes ' + p.name + ' and all ' + es.length + (es.length === 1 ? ' entry' : ' entries') + ' recorded for them (' + s.attendedCount + (s.attendedCount === 1 ? ' class' : ' classes') + ' attended, plus any packs, gi hire and gradings). Nobody else is touched. It cannot be undone.' }),
         h('p', { class: 'hint', text: 'If they have just left the club, use Archive instead, which keeps their records. If you are not sure, take a backup first in Settings.' }),
         labelled('Type DELETE to continue', typed)),
       actions: [
@@ -883,15 +823,10 @@
   }
   function fact(k, v) { return h('div', {}, h('dt', { text: k }), h('dd', { text: v })); }
 
-  function settleNow(pid, attendId, how, opts, okMsg) {
-    enqueue(function () {
-      return opSettle(pid, attendId, how, opts).then(reload).then(function () { toast(okMsg); }).catch(function (e) { toast(e.message); return reload(); });
-    });
-  }
   function undoEntry(p, r) {
     var plan = L.planReverse(p, D.entriesBy[p.id] || [], r.entry.id, D.classesById, Date.now());
     if (!plan.ok) { toast(plan.reason); return; }
-    var extra = plan.info && plan.info.moneyBack ? ' Money was recorded against this, so that is undone too. If you took money, refund it yourself.' : '';
+    var extra = '';
     confirmBox('Undo this entry?', r.title + '.' + extra + ' It stays in the history, marked as undone.', 'Undo it', function () {
       enqueue(function () {
         return opReverse(p.id, r.entry.id).then(reload).then(function () { toast('Undone.'); }).catch(function (e) { toast(e.message); return reload(); });
@@ -899,82 +834,34 @@
     }, true);
   }
 
-  function methodSelect() {
-    var sel = h('select', { 'aria-label': 'How it was paid' }, L.METHODS.map(function (m) { return h('option', { value: m }, labelMethod(m)); }));
-    sel.value = 'cash';
-    return sel;
-  }
   function labelled(text, control, hint) {
     var id = 'f' + (++uid);
     control.id = id;
     return h('div', { class: 'field' }, h('label', { for: id, text: text }), control, hint ? h('p', { class: 'hint', text: hint }) : null);
   }
-  function paidModal(pid, o) {
-    var amount = h('input', { type: 'text', inputmode: 'decimal', value: dollars(o.priceCents) });
-    var method = methodSelect();
-    modal({
-      title: (o.what || 'Lesson') + ' ' + L.dateLabel(o.date) + ' paid',
-      body: h('div', { class: 'stack' }, labelled('Amount paid ($)', amount), labelled('How it was paid', method)),
-      actions: [
-        { label: 'Save payment', onclick: function (close) {
-          var cents = L.parseDollars(amount.value);
-          if (cents === null) { toast('Enter the amount as dollars, for example 25 or 12.50.'); return; }
-          close();
-          settleNow(pid, o.attendId, 'paid', { amountCents: cents, method: method.value }, 'Payment saved.');
-        } },
-        { label: 'Cancel', kind: 'alt', onclick: function (close) { close(); } }
-      ]
-    });
-  }
-  function compModal(pid, o) {
-    var note = h('input', { type: 'text', placeholder: 'For example: will buy a pack next week', autocomplete: 'off' });
-    modal({
-      title: o.what ? 'Comp the gi hire ' + L.dateLabel(o.date) : 'Comp the lesson ' + L.dateLabel(o.date),
-      body: h('div', { class: 'stack' }, h('p', { text: o.what ? 'A comped gi hire is free and is no longer owed.' : 'A comped lesson is free. It is not owed and does not use a pack credit, and it still counts as attended.' }), labelled('Short reason', note)),
-      actions: [
-        { label: o.what ? 'Comp this gi hire' : 'Comp this lesson', onclick: function (close) {
-          if (!note.value.trim()) { toast('Add a short reason first.'); return; }
-          close();
-          settleNow(pid, o.attendId, 'comp', { note: note.value }, o.what ? 'Gi hire comped.' : 'Lesson comped.');
-        } },
-        { label: 'Cancel', kind: 'alt', onclick: function (close) { close(); } }
-      ]
-    });
-  }
   function addPackModal(pid) {
     var p = personById(pid);
-    var sizes = L.packSizes(S.settings, p.rate);
-    if (!sizes.length) { toast('There are no packs for the ' + labelRate(p.rate).toLowerCase() + ' rate.'); return; }
-    var chosen = sizes.indexOf(10) >= 0 ? 10 : sizes[0];
-    var amount = h('input', { type: 'text', inputmode: 'decimal', value: dollars(L.packPrice(S.settings, p.rate, chosen)) });
-    var method = methodSelect();
+    var left = D.sums[pid].credits;
+    var count = h('input', { type: 'number', inputmode: 'numeric', min: '1', step: '1', value: '10' });
     var chips = h('div', { class: 'chips' });
-    function draw() {
-      chips.textContent = '';
-      sizes.forEach(function (sz) {
-        chips.appendChild(h('button', {
-          type: 'button', class: 'chip', 'aria-pressed': sz === chosen ? 'true' : 'false', 'data-size': sz,
-          onclick: function () { chosen = sz; amount.value = dollars(L.packPrice(S.settings, p.rate, sz)); draw(); }
-        }, sz + '-pack · ' + L.money(L.packPrice(S.settings, p.rate, sz))));
-      });
-    }
-    draw();
+    [5, 10, 20].forEach(function (n) {
+      chips.appendChild(h('button', { type: 'button', class: 'chip', 'data-size': n, onclick: function () { count.value = String(n); } }, String(n)));
+    });
     modal({
       title: 'Add a pack for ' + p.name,
-      body: h('div', { class: 'stack' }, h('div', { class: 'field' }, h('span', { class: 'lbl', text: 'Pack size' }), chips),
-        labelled('Amount paid ($)', amount, 'Starts at the listed price. Change it if they paid something different.'), labelled('How it was paid', method)),
+      body: h('div', { class: 'stack' },
+        h('p', { text: 'Each class they attend uses one, after any free lessons. They have ' + left + ' pack ' + (left === 1 ? 'class' : 'classes') + ' left now.' }),
+        h('div', { class: 'field' }, h('span', { class: 'lbl', text: 'Quick pick' }), chips),
+        labelled('Classes in the pack', count)),
       actions: [
         { label: 'Add pack', onclick: function (close) {
-          var cents = L.parseDollars(amount.value);
-          if (cents === null) { toast('Enter the amount as dollars, for example 200.'); return; }
+          var n = parseInt(count.value, 10);
+          var plan = L.planPack(p, D.entriesBy[pid] || [], n, Date.now());
+          if (!plan.ok) { toast(plan.reason); return; }
           close();
           enqueue(function () {
-            return opPack(pid, chosen, cents, method.value).then(function (plan) {
-              return reload().then(function () {
-                toast(chosen + '-pack added.');
-                var s = D.sums[pid];
-                if (s.owed.length && s.credits > 0) coverPrompt(pid);
-              });
+            return opPack(pid, n).then(reload).then(function () {
+              toast('Added ' + n + (n === 1 ? ' class' : ' classes') + '. ' + D.sums[pid].credits + ' left.');
             }).catch(function (e) { toast(e.message); return reload(); });
           });
         } },
@@ -997,7 +884,7 @@
     modal({
       title: 'Give ' + p.name + ' free lessons',
       body: h('div', { class: 'stack' },
-        h('p', { text: 'They use these up as they attend, then normal prices apply again. They have ' + s.freeLeft + ' free ' + (s.freeLeft === 1 ? 'lesson' : 'lessons') + ' left now.' }),
+        h('p', { text: 'They use these up as they attend, then it goes back to normal. They have ' + s.freeLeft + ' free ' + (s.freeLeft === 1 ? 'lesson' : 'lessons') + ' left now.' }),
         h('div', { class: 'field' }, h('span', { class: 'lbl', text: 'Quick pick' }), chips),
         labelled('How many free lessons', count),
         labelled('Reason (optional)', note, 'Shows in their history.')),
@@ -1017,73 +904,24 @@
       ]
     });
   }
-  function coverPrompt(pid) {
-    var p = personById(pid);
-    var s = D.sums[pid];
-    var n = Math.min(s.owed.length, s.credits);
-    modal({
-      title: 'Cover the owed lessons?',
-      focus: false,
-      body: h('p', { text: p.name + ' owes ' + s.owed.length + (s.owed.length === 1 ? ' lesson' : ' lessons') + ' (' + L.money(s.owedCents) + '). Covering uses ' + n + (n === 1 ? ' credit' : ' credits') + ' from the pack and clears ' + (n === s.owed.length ? 'them' : n + ' of them') + '.' }),
-      actions: [
-        { label: 'Cover them with the pack', onclick: function (close) {
-          close();
-          enqueue(function () { return opCover(pid).then(reload).then(function () { toast('Covered.'); }); });
-        } },
-        { label: 'Leave them owed', kind: 'alt', onclick: function (close) { close(); } }
-      ]
-    });
-  }
-
   /* ---------- gi hire, grading, memberships ---------- */
-  function hireText(hire) {
-    if (hire.status === 'nocharge') return 'Gi hire, no charge';
-    if (hire.status === 'owed') return 'Gi hire owes ' + L.money(hire.priceCents);
-    if (hire.status === 'comped') return 'Gi hire comped';
-    return 'Gi hire paid ' + L.money(hire.paidCents || hire.priceCents);
-  }
+  function hireText() { return 'Gi hire'; }
   function memberText(m) {
     if (!m || !m.member) return 'Not recorded';
     return 'Member' + (m.number ? ' · no. ' + m.number : '') + (m.expiry ? ' · expiry ' + fullDate(m.expiry) : '');
-  }
-  function recordHire(p, cls, method, okMsg) {
-    enqueue(function () {
-      return opHire(p.id, cls.id, method).then(reload).then(function () { toast(okMsg); }).catch(function (e) { toast(e.message); return reload(); });
-    });
   }
   function hireTap(p, cls) {
     var s = D.sums[p.id];
     var hire = s.hireByClass[cls.id];
     if (hire) {
-      var paid = hire.status === 'paid' || hire.status === 'comped';
-      confirmBox('Remove gi hire?',
-        (paid ? 'This gi hire was recorded as ' + (hire.status === 'comped' ? 'comped' : 'paid ' + L.money(hire.paidCents || hire.priceCents) + (hire.method ? ' by ' + hire.method : '')) + '. Removing it undoes that. If you took money, refund it yourself. ' : '') +
-        'The lesson stays marked present, and the gi hire stays in the history as undone.',
-        'Remove gi hire', function () {
-          enqueue(function () {
-            return opReverse(p.id, hire.entry.id).then(reload).then(function () { toast('Gi hire removed.'); }).catch(function (e) { toast(e.message); return reload(); });
-          });
-        }, true);
+      enqueue(function () {
+        return opReverse(p.id, hire.entry.id).then(reload).then(function () { toast('Gi hire removed.'); }).catch(function (e) { toast(e.message); return reload(); });
+      });
       return;
     }
-    var att = s.attendByClass[cls.id];
-    if (!att) { toast('Mark ' + p.name + ' present first.'); return; }
-    var price = (att.cover === 'free' && !S.settings.giHireOnFree) ? 0 : S.settings.giHireCents;
-    if (price === 0) { recordHire(p, cls, '', 'Gi hire recorded, no charge on a free lesson.'); return; }
-    function pay(method) {
-      return function (close) { close(); recordHire(p, cls, method, method ? 'Gi hire ' + L.money(price) + ' paid by ' + method + '.' : p.name + ' owes ' + L.money(price) + ' for gi hire.'); };
-    }
-    modal({
-      title: 'Gi hire for ' + p.name,
-      focus: false,
-      body: h('p', { text: L.money(price) + ' for ' + L.dateLabel(cls.date) + '. How was it paid?' }),
-      actions: [
-        { label: 'Paid cash', onclick: pay('cash') },
-        { label: 'Paid bank', onclick: pay('bank') },
-        { label: 'Paid card', onclick: pay('card') },
-        { label: 'Not paid yet', kind: 'alt', onclick: pay('') },
-        { label: 'Cancel', kind: 'alt', onclick: function (close) { close(); } }
-      ]
+    if (!s.attendByClass[cls.id]) { toast('Mark ' + p.name + ' present first.'); return; }
+    enqueue(function () {
+      return opHire(p.id, cls.id).then(reload).then(function () { toast('Gi hire recorded for ' + p.name + '.'); }).catch(function (e) { toast(e.message); return reload(); });
     });
   }
   function gradingModal(pid) {
@@ -1125,7 +963,7 @@
       name: '', rate: 'adult', under18: false, guardianName: '', guardianPhone: '', source: '',
       waiver: { signed: false, date: '', by: '' }, release: { signed: false, date: '', by: '' },
       sambo: { member: false, number: '', expiry: '' }, vaju: { member: false, number: '', expiry: '' },
-      cardChecked: false, trainsFree: false, freeAllowed: S.settings.freeLessons, freeUsedBefore: 0, note: '', createdAt: Date.now()
+      cardChecked: false, emergencyWorker: false, trainsFree: false, freeAllowed: S.settings.freeLessons, freeUsedBefore: 0, note: '', createdAt: Date.now()
     };
     p.waiver = p.waiver || { signed: false, date: '', by: '' };
     p.release = p.release || { signed: false, date: '', by: '' };
@@ -1133,14 +971,14 @@
     p.vaju = p.vaju || { member: false, number: '', expiry: '' };
 
     var name = h('input', { type: 'text', value: p.name, autocomplete: 'off', autocapitalize: 'words' });
-    var rate = sel(L.RATES.map(function (r) { return [r, labelRate(r)]; }), p.rate);
+    var emerg = h('input', { type: 'checkbox', checked: !!p.emergencyWorker });
     var under = h('input', { type: 'checkbox', checked: p.under18 });
     var gName = h('input', { type: 'text', value: p.guardianName || '', autocomplete: 'off', autocapitalize: 'words' });
     var gPhone = h('input', { type: 'tel', value: p.guardianPhone || '', autocomplete: 'off' });
     var source = sel([['', 'Choose…']].concat(L.SOURCES.map(function (s) { return [s, labelSource(s)]; })), p.source || '');
     var card = h('input', { type: 'checkbox', checked: p.cardChecked });
     var gBox = h('div', { class: 'group' }, labelled('Guardian name', gName), labelled('Guardian phone', gPhone));
-    var cardBox = h('label', { class: 'check' }, card, 'Concession card checked');
+    var cardBox = h('label', { class: 'check' }, card, 'ID or card checked');
     var trainsFree = h('input', { type: 'checkbox', checked: p.trainsFree });
 
     function formGroup(title, f) {
@@ -1181,9 +1019,9 @@
     var note = h('textarea', { rows: '3', placeholder: 'Not for medical details', autocomplete: 'off' });
     note.value = p.note || '';
 
-    function sync() { gBox.hidden = !under.checked; cardBox.hidden = rate.value !== 'concession'; }
+    function sync() { gBox.hidden = !under.checked; cardBox.hidden = !emerg.checked; }
     under.addEventListener('change', sync);
-    rate.addEventListener('change', sync);
+    emerg.addEventListener('change', sync);
     sync();
 
     function save() {
@@ -1196,10 +1034,10 @@
       if (under.checked && w.signed && !w.by) { toast('Say which parent or guardian signed the injury waiver.'); return; }
       if (under.checked && r.signed && !r.by) { toast('Say which parent or guardian signed the model release.'); return; }
       var out = Object.assign({}, p, {
-        name: nm, rate: rate.value, under18: under.checked,
+        name: nm, rate: p.rate || 'adult', emergencyWorker: emerg.checked, under18: under.checked,
         guardianName: under.checked ? gName.value.trim() : '', guardianPhone: under.checked ? gPhone.value.trim() : '',
         source: source.value, waiver: w, release: r,
-        cardChecked: rate.value === 'concession' ? card.checked : false, trainsFree: trainsFree.checked,
+        cardChecked: emerg.checked ? card.checked : false, trainsFree: trainsFree.checked,
         freeAllowed: fa, freeUsedBefore: fu, note: note.value.trim(),
         sambo: samboG.read(), vaju: vajuG.read()
       });
@@ -1219,10 +1057,11 @@
     pushSheet(isNew ? 'Add person' : 'Edit details', function () {
       return h('div', { class: 'stack' },
         h('section', { class: 'card' },
-          labelled('Name', name), labelled('Rate', rate), h('label', { class: 'check' }, under, 'Under 18'), gBox, cardBox,
+          labelled('Name', name), h('label', { class: 'check' }, under, 'Under 18'), gBox,
+          h('label', { class: 'check' }, emerg, 'Emergency worker'), cardBox,
           labelled('How they found the club', source),
-          h('label', { class: 'check' }, trainsFree, 'Free forever (never charged)'),
-          h('p', { class: 'hint', text: 'For people who never pay, like family. Their lessons still count as attended, and no free lesson or pack credit is used. For just a set number of free lessons, use "Give free lessons" on their page instead.' })),
+          h('label', { class: 'check' }, trainsFree, 'Free forever'),
+          h('p', { class: 'hint', text: 'For people who never pay, like family. Their lessons still count as attended, and no free lesson or pack class is used. For just a set number of free lessons, use "Give free lessons" on their page instead.' })),
         h('section', { class: 'card' }, h('h2', { text: 'Forms' }), waiver.el, release.el,
           h('p', { class: 'hint', text: 'For under-18s, a parent or guardian signs both forms and the record says who.' })),
         h('section', { class: 'card' }, h('h2', { text: 'Memberships' }), samboG.el, vajuG.el,
@@ -1388,7 +1227,6 @@
     toast('Downloaded ' + file.name + '. Look in Downloads or the Files app.');
   }
 
-  function priceInput(cents) { return h('input', { type: 'text', inputmode: 'decimal', value: dollars(cents) }); }
   function viewSettings() {
     var v = h('div', { class: 'stack' });
 
@@ -1424,45 +1262,19 @@
       h('div', { class: 'btns' },
         h('button', { type: 'button', class: 'btn', onclick: function () { openAttendanceSheet(fromIn.value, toIn.value); } }, 'Print attendance sheet'),
         h('button', { type: 'button', class: 'btn alt', onclick: function () { saveAttendanceCsv(fromIn.value, toIn.value); } }, 'Save as spreadsheet (CSV)')),
-      h('p', { class: 'hint', text: 'Names, class dates and totals only. No money or form details. On the iPad, the print screen lets you pinch the preview to save it as a PDF.' })));
+      h('p', { class: 'hint', text: 'Names, class dates and totals only. No form details. On the iPad, the print screen lets you pinch the preview to save it as a PDF.' })));
 
-    var P = S.settings.prices;
     var free = h('input', { type: 'number', min: '0', step: '1', value: S.settings.freeLessons });
-    var inputs = {
-      adultS: priceInput(P.adult.sessionCents), adult5: priceInput(P.adult.packs[5]), adult10: priceInput(P.adult.packs[10]),
-      juniorS: priceInput(P.junior.sessionCents), junior5: priceInput(P.junior.packs[5]), junior10: priceInput(P.junior.packs[10]), junior20: priceInput(P.junior.packs[20]),
-      concS: priceInput(P.concession.sessionCents)
-    };
-    var giPrice = priceInput(S.settings.giHireCents);
-    var giFree = h('input', { type: 'checkbox', checked: S.settings.giHireOnFree });
-    function savePrices() {
+    function saveFree() {
       var out = JSON.parse(JSON.stringify(S.settings));
       var fl = parseInt(free.value, 10);
       if (!(fl >= 0)) { toast('Free lessons must be zero or more.'); return; }
       out.freeLessons = fl;
-      var gi = L.parseDollars(giPrice.value);
-      if (gi === null) { toast('Enter the gi hire price as dollars, for example 10.'); return; }
-      out.giHireCents = gi;
-      out.giHireOnFree = giFree.checked;
-      var map = [['adult', 'sessionCents', inputs.adultS], ['adult', 5, inputs.adult5], ['adult', 10, inputs.adult10],
-        ['junior', 'sessionCents', inputs.juniorS], ['junior', 5, inputs.junior5], ['junior', 10, inputs.junior10], ['junior', 20, inputs.junior20],
-        ['concession', 'sessionCents', inputs.concS]];
-      for (var i = 0; i < map.length; i++) {
-        var c = L.parseDollars(map[i][2].value);
-        if (c === null) { toast('Enter prices as dollars, for example 25 or 12.50.'); return; }
-        if (map[i][1] === 'sessionCents') out.prices[map[i][0]].sessionCents = c; else out.prices[map[i][0]].packs[map[i][1]] = c;
-      }
-      enqueue(function () { return opMeta([{ k: 'settings', v: out }]).then(reload).then(function () { toast('Prices saved. Earlier entries keep the prices they were made at.'); }); });
+      enqueue(function () { return opMeta([{ k: 'settings', v: out }]).then(reload).then(function () { toast('Saved. People already on the list keep their own number.'); }); });
     }
-    v.appendChild(h('section', { class: 'card' }, h('h2', { text: 'Prices' }),
-      labelled('Free lessons for new people', free),
-      h('div', { class: 'two' },
-        h('div', { class: 'group' }, h('h3', { text: 'Adult' }), labelled('Per session ($)', inputs.adultS), labelled('5-class pack ($)', inputs.adult5), labelled('10-class pack ($)', inputs.adult10)),
-        h('div', { class: 'group' }, h('h3', { text: 'Junior' }), labelled('Per session ($)', inputs.juniorS), labelled('5-class pack ($)', inputs.junior5), labelled('10-class pack ($)', inputs.junior10), labelled('20-class pack ($)', inputs.junior20)),
-        h('div', { class: 'group' }, h('h3', { text: 'Concession' }), labelled('Flat per session ($)', inputs.concS))),
-      h('div', { class: 'group' }, h('h3', { text: 'Gi hire' }), labelled('Gi hire price, any rate ($)', giPrice),
-        h('label', { class: 'check' }, giFree, 'Charge gi hire on free lessons')),
-      h('button', { type: 'button', class: 'btn', onclick: savePrices }, 'Save prices')));
+    v.appendChild(h('section', { class: 'card' }, h('h2', { text: 'New people' }),
+      labelled('Free lessons for each new person', free, 'Applies to people you add from now on.'),
+      h('button', { type: 'button', class: 'btn', onclick: saveFree }, 'Save')));
 
     var MONTHS_LONG = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
     function dateDefault(title, key) {
@@ -1503,7 +1315,7 @@
         h('button', { type: 'button', class: 'btn alt', onclick: showLock }, 'Lock now'))));
 
     v.appendChild(h('section', { class: 'card' }, h('h2', { text: 'Start fresh' }),
-      h('p', { class: 'muted', text: 'Erases all students, classes and records on this iPad. Prices and the PIN stay. Use it after trying the app with made-up names, once you have a backup of anything you want to keep.' }),
+      h('p', { class: 'muted', text: 'Erases all students, classes and records on this iPad. The PIN and your settings stay. Use it after trying the app with made-up names, once you have a backup of anything you want to keep.' }),
       h('button', { type: 'button', class: 'btn danger', onclick: startFresh }, 'Erase all students and records')));
 
     v.appendChild(h('footer', { text: BUILD }));

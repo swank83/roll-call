@@ -1,7 +1,7 @@
 /* Offline cache for the Portland Takedown roll call.
    Cache-first: once these files are saved, the app opens with no connection.
    To ship a new version, change CACHE below (v1 -> v2) and publish the files again. */
-const CACHE = 'pt-rollcall-v4';
+const CACHE = 'pt-rollcall-v5';
 const FILES = [
   './',
   'index.html',
