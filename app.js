@@ -6,7 +6,7 @@
 
   var L = window.Ledger;
   var APP = 'portland-takedown-roll-call';
-  var BUILD = 'Stage 1, build 1';
+  var BUILD = 'Version 1.1';
   var EXPECTED_FILES = 8;
   var DB_NAME = 'pt-rollcall';
   var IDLE_LOCK_MS = 5 * 60 * 1000;
@@ -186,6 +186,27 @@
     return atomic(['people', 'classes', 'ledger'], function (st, done, fail) {
       withPerson(st, pid, fail, function (p, es, byId) {
         runPlan(L.planReverse(p, es, entryId, byId, Date.now()), st, done, fail);
+      });
+    });
+  }
+  function opHire(pid, cid, method) {
+    return atomic(['people', 'classes', 'ledger'], function (st, done, fail) {
+      withPerson(st, pid, fail, function (p, es, byId) {
+        runPlan(L.planHire(p, es, cid, byId, S.settings, method, Date.now()), st, done, fail);
+      });
+    });
+  }
+  function opGrade(pid, g) {
+    return atomic(['people', 'classes', 'ledger'], function (st, done, fail) {
+      withPerson(st, pid, fail, function (p, es) {
+        runPlan(L.planGrade(p, es, g, Date.now()), st, done, fail);
+      });
+    });
+  }
+  function opGift(pid, count, note) {
+    return atomic(['people', 'classes', 'ledger'], function (st, done, fail) {
+      withPerson(st, pid, fail, function (p, es, byId) {
+        runPlan(L.planGift(p, es, count, note, byId, Date.now()), st, done, fail);
       });
     });
   }
@@ -483,7 +504,8 @@
     var days = Math.floor((Date.now() - t) / 86400000);
     return 'Last backup file: ' + fmtDateTime(t) + (days >= 1 ? ' (' + days + (days === 1 ? ' day' : ' days') + ' ago)' : ' (today)');
   }
-  function balanceText(s) {
+  function balanceText(s, p) {
+    if (p && p.trainsFree) return 'Trains free';
     var parts = [];
     if (s.freeLeft > 0) parts.push('Free lessons left: ' + s.freeLeft);
     if (s.credits > 0) parts.push('Credits left: ' + s.credits);
@@ -492,6 +514,7 @@
   }
   function todayText(att, s) {
     if (att.cover === 'free') return 'Free lesson';
+    if (att.cover === 'waived') return 'Free to train';
     if (att.cover === 'credit') return 'Pack credit used';
     var st = s && s.settleByAttend[att.id];
     if (!st) return 'Owes ' + L.money(att.priceCents);
@@ -519,8 +542,7 @@
     var now = Date.now();
     if (lastTap[p.id] && now - lastTap[p.id] < 500) return;
     lastTap[p.id] = now;
-    var s = D.sums[p.id];
-    var att = s && s.attendByClass[cls.id];
+    var UNDO_MSG = 'Money was recorded against this lesson (a payment, a covered lesson or gi hire). Undoing it undoes those too. If you took money, refund it yourself.';
     function go(confirmed) {
       enqueue(function () {
         return opTap(p.id, cls.id, confirmed).then(function (plan) {
@@ -529,7 +551,7 @@
           });
         }).catch(function (e) {
           if (e.needsConfirm) {
-            confirmBox('Undo this lesson?', 'This lesson was already settled. Undoing it also undoes the payment or credit that settled it. If you took money, refund it yourself.', 'Undo lesson', function () { go(true); }, true);
+            confirmBox('Undo this lesson?', UNDO_MSG, 'Undo lesson', function () { go(true); }, true);
             return reload();
           }
           toast(e.message);
@@ -537,8 +559,9 @@
         });
       });
     }
-    if (att && s.settleByAttend[att.id]) {
-      confirmBox('Undo this lesson?', 'This lesson was already settled. Undoing it also undoes the payment or credit that settled it. If you took money, refund it yourself.', 'Undo lesson', function () { go(true); }, true);
+    var pre = L.planTap(p, D.entriesBy[p.id] || [], cls.id, D.classesById, S.settings, false, Date.now());
+    if (!pre.ok && pre.needsConfirm) {
+      confirmBox('Undo this lesson?', UNDO_MSG, 'Undo lesson', function () { go(true); }, true);
       return;
     }
     go(false);
@@ -558,12 +581,14 @@
     var cls = S.classId ? D.classesById[S.classId] : null;
     var dateInput = h('input', { type: 'date', value: cls ? cls.date : L.localDate(), 'aria-label': 'Class date' });
     v.appendChild(h('section', { class: 'card' },
-      h('h2', { text: 'Class' }),
+      h('h2', { text: 'Which class?' }),
+      h('button', { type: 'button', class: 'btn', onclick: function () { startClass(L.localDate()); } }, 'Today: ' + L.dateLabel(L.localDate())),
+      h('p', { class: 'muted small', text: 'Or pick any other day. Monday, Friday, a Saturday, a Sunday or a one-off midweek class all work the same.' }),
       h('div', { class: 'pick' }, dateInput,
-        h('button', { type: 'button', class: 'btn', onclick: function () { startClass(dateInput.value); } }, 'Open class')),
-      h('p', { class: 'hint', text: 'Pick the date and open it. Opening a date that already has a class just brings it back.' })));
+        h('button', { type: 'button', class: 'btn alt', onclick: function () { startClass(dateInput.value); } }, 'Open class')),
+      h('p', { class: 'hint', text: 'Opening a date that already has a class just brings it back.' })));
 
-    var recent = S.classes.slice().sort(function (a, b) { return a.date < b.date ? 1 : -1; }).slice(0, 6);
+    var recent = S.classes.slice().sort(function (a, b) { return a.date < b.date ? 1 : -1; }).slice(0, 8);
     if (recent.length) {
       v.appendChild(h('div', { class: 'chips', 'aria-label': 'Recent classes' }, recent.map(function (c) {
         return h('button', {
@@ -597,12 +622,19 @@
       shown.forEach(function (p) {
         var s = D.sums[p.id];
         var att = s.attendByClass[cls.id];
+        var hire = s.hireByClass[cls.id];
+        var parts = [];
+        if (att) parts.push(todayText(att, s));
+        if (hire) parts.push(hireText(hire));
+        if (!(p.trainsFree && att)) parts.push(balanceText(s, p));
         list.appendChild(h('div', { class: 'row' + (att ? ' present' : '') },
           h('button', { type: 'button', class: 'rowmain', 'aria-pressed': att ? 'true' : 'false', 'data-person': p.id, onclick: function () { tapPerson(p, cls); } },
             h('span', { class: 'rname', text: p.name }),
-            h('span', { class: 'rsub', text: (att ? todayText(att, s) + ' · ' : '') + balanceText(s) }),
+            h('span', { class: 'rsub', text: parts.join(' · ') }),
             h('span', { class: 'badge', text: att ? 'Present' : 'Tap to mark present' })),
-          h('div', { class: 'rowside' }, h('button', { type: 'button', class: 'btn alt small', onclick: function () { openPerson(p.id); } }, 'Details'))));
+          h('div', { class: 'rowside' },
+            att ? h('button', { type: 'button', class: 'btn alt small', 'aria-pressed': hire ? 'true' : 'false', onclick: function () { hireTap(p, cls); } }, hire ? 'Gi hire: yes' : 'Gi hire') : null,
+            h('button', { type: 'button', class: 'btn alt small', onclick: function () { openPerson(p.id); } }, 'Details'))));
       });
     }
     search.addEventListener('input', function () { S.rollQ = search.value; fill(); });
@@ -642,7 +674,7 @@
         list.appendChild(h('div', { class: 'row' },
           h('button', { type: 'button', class: 'rowmain', onclick: function () { openPerson(p.id); } },
             h('span', { class: 'rname', text: p.name }),
-            h('span', { class: 'rsub', text: labelRate(p.rate) + (p.under18 ? ' · under 18' : '') + ' · ' + s.attendedCount + (s.attendedCount === 1 ? ' class' : ' classes') + (s.lastDate ? ' · last ' + L.dateLabel(s.lastDate) : '') }),
+            h('span', { class: 'rsub', text: labelRate(p.rate) + (p.trainsFree ? ' · trains free' : '') + (p.under18 ? ' · under 18' : '') + ' · ' + s.attendedCount + (s.attendedCount === 1 ? ' class' : ' classes') + (s.lastDate ? ' · last ' + L.dateLabel(s.lastDate) : '') }),
             h('span', { class: 'rsub', text: 'Injury waiver: ' + (p.waiver && p.waiver.signed ? 'yes' : 'no') + ' · Model release: ' + (p.release && p.release.signed ? 'yes' : 'no') + ' · ' + labelSource(p.source) })),
           h('span')));
       });
@@ -679,18 +711,21 @@
 
     wrap.appendChild(h('section', { class: 'card' }, h('h2', { text: 'Right now' }),
       h('dl', { class: 'facts' },
+        p.trainsFree ? fact('Free to train', 'Yes, never charged') : null,
         fact('Free lessons left', s.freeLeft + ' of ' + s.freeAllowed),
         fact('Credits left', String(s.credits)),
         fact('Owes', s.owedCents > 0 ? L.money(s.owedCents) + ' (' + s.owed.length + (s.owed.length === 1 ? ' lesson)' : ' lessons)') : 'Nothing'),
+        s.hireOwedCents > 0 ? fact('Gi hire owed', L.money(s.hireOwedCents)) : null,
         fact('Classes attended', String(s.attendedCount)),
         fact('Last attended', s.lastDate ? L.dateLabel(s.lastDate) : 'Not yet')),
       h('div', { class: 'acts' },
         h('button', { type: 'button', class: 'btn', disabled: packSizes.length ? null : true, onclick: function () { addPackModal(p.id); } }, 'Add a pack'),
+        h('button', { type: 'button', class: 'btn alt', onclick: function () { giftModal(p.id); } }, 'Give free lessons'),
         h('button', { type: 'button', class: 'btn alt', onclick: function () { openPersonForm(p); } }, 'Edit details')),
       packSizes.length ? null : h('p', { class: 'hint', text: 'The concession rate has no packs. It is a flat price per session.' })));
 
-    if (s.owed.length) {
-      wrap.appendChild(h('section', { class: 'card' }, h('h2', { text: 'Owed lessons' }),
+    if (s.owed.length || s.hireOwed.length) {
+      wrap.appendChild(h('section', { class: 'card' }, h('h2', { text: 'Owed' }),
         s.owed.map(function (o) {
           return h('div', { class: 'owed' },
             h('p', {}, h('strong', { text: L.dateLabel(o.date) }), ' · owes ' + L.money(o.priceCents)),
@@ -699,6 +734,14 @@
               h('button', { type: 'button', class: 'btn alt small', onclick: function () { compModal(p.id, o); } }, 'Comp'),
               s.credits > 0 ? h('button', { type: 'button', class: 'btn alt small', onclick: function () { settleNow(p.id, o.attendId, 'credit', {}, 'Covered by a pack credit.'); } }, 'Use a pack credit') : null,
               s.freeLeft > 0 ? h('button', { type: 'button', class: 'btn alt small', onclick: function () { settleNow(p.id, o.attendId, 'free', {}, 'Covered by a free lesson.'); } }, 'Use a free lesson') : null));
+        }),
+        s.hireOwed.map(function (o) {
+          var target = { attendId: o.hireId, date: o.date, priceCents: o.priceCents, what: 'Gi hire' };
+          return h('div', { class: 'owed' },
+            h('p', {}, h('strong', { text: 'Gi hire ' + L.dateLabel(o.date) }), ' · owes ' + L.money(o.priceCents)),
+            h('div', { class: 'acts' },
+              h('button', { type: 'button', class: 'btn small', onclick: function () { paidModal(p.id, target); } }, 'Paid'),
+              h('button', { type: 'button', class: 'btn alt small', onclick: function () { compModal(p.id, target); } }, 'Comp')));
         })));
     }
 
@@ -706,6 +749,27 @@
       h('dl', { class: 'facts' },
         fact('Injury waiver', formText(p.waiver)),
         fact('Model release', formText(p.release)))));
+
+    wrap.appendChild(h('section', { class: 'card' }, h('h2', { text: 'Memberships' }),
+      h('dl', { class: 'facts' },
+        fact('Sambo Australia', memberText(p.sambo)),
+        fact('VAJU', memberText(p.vaju)))));
+
+    var g = s.lastGrade;
+    var gradeFacts = [fact('Current grade', g ? g.to : 'Not recorded')];
+    if (g) {
+      gradeFacts.push(fact('Last graded', L.dateLong(g.date)));
+      gradeFacts.push(fact('Classes since last grading', String(s.sinceGrade)));
+    }
+    wrap.appendChild(h('section', { class: 'card' }, h('h2', { text: 'Judo grading' }),
+      h('dl', { class: 'facts' }, gradeFacts),
+      s.grades.length ? h('ul', { class: 'glist' }, s.grades.slice().reverse().map(function (e) {
+        return h('li', {},
+          h('div', {}, h('span', { class: 't', text: (e.from ? e.from + ' to ' : 'To ') + e.to }),
+            h('span', { class: 'd', text: ' · ' + L.dateLong(e.date) + (e.note ? ' · ' + e.note : '') })),
+          h('span'));
+      })) : null,
+      h('div', { class: 'acts' }, h('button', { type: 'button', class: 'btn alt', onclick: function () { gradingModal(p.id); } }, 'Add grading'))));
 
     var about = [fact('Rate', labelRate(p.rate) + (p.rate === 'concession' ? (p.cardChecked ? ' (card checked)' : ' (card not checked)') : '')),
       fact('Under 18', p.under18 ? 'Yes' : 'No')];
@@ -745,7 +809,7 @@
   function undoEntry(p, r) {
     var plan = L.planReverse(p, D.entriesBy[p.id] || [], r.entry.id, D.classesById, Date.now());
     if (!plan.ok) { toast(plan.reason); return; }
-    var extra = plan.info && plan.info.alsoUndidSettle ? ' This lesson was settled, so that is undone too. If you took money, refund it yourself.' : '';
+    var extra = plan.info && plan.info.moneyBack ? ' Money was recorded against this, so that is undone too. If you took money, refund it yourself.' : '';
     confirmBox('Undo this entry?', r.title + '.' + extra + ' It stays in the history, marked as undone.', 'Undo it', function () {
       enqueue(function () {
         return opReverse(p.id, r.entry.id).then(reload).then(function () { toast('Undone.'); }).catch(function (e) { toast(e.message); return reload(); });
@@ -767,7 +831,7 @@
     var amount = h('input', { type: 'text', inputmode: 'decimal', value: dollars(o.priceCents) });
     var method = methodSelect();
     modal({
-      title: 'Lesson ' + L.dateLabel(o.date) + ' paid',
+      title: (o.what || 'Lesson') + ' ' + L.dateLabel(o.date) + ' paid',
       body: h('div', { class: 'stack' }, labelled('Amount paid ($)', amount), labelled('How it was paid', method)),
       actions: [
         { label: 'Save payment', onclick: function (close) {
@@ -783,13 +847,13 @@
   function compModal(pid, o) {
     var note = h('input', { type: 'text', placeholder: 'For example: will buy a pack next week', autocomplete: 'off' });
     modal({
-      title: 'Comp the lesson ' + L.dateLabel(o.date),
-      body: h('div', { class: 'stack' }, h('p', { text: 'A comped lesson is free. It is not owed and does not use a pack credit, and it still counts as attended.' }), labelled('Short reason', note)),
+      title: o.what ? 'Comp the gi hire ' + L.dateLabel(o.date) : 'Comp the lesson ' + L.dateLabel(o.date),
+      body: h('div', { class: 'stack' }, h('p', { text: o.what ? 'A comped gi hire is free and is no longer owed.' : 'A comped lesson is free. It is not owed and does not use a pack credit, and it still counts as attended.' }), labelled('Short reason', note)),
       actions: [
-        { label: 'Comp this lesson', onclick: function (close) {
+        { label: o.what ? 'Comp this gi hire' : 'Comp this lesson', onclick: function (close) {
           if (!note.value.trim()) { toast('Add a short reason first.'); return; }
           close();
-          settleNow(pid, o.attendId, 'comp', { note: note.value }, 'Lesson comped.');
+          settleNow(pid, o.attendId, 'comp', { note: note.value }, o.what ? 'Gi hire comped.' : 'Lesson comped.');
         } },
         { label: 'Cancel', kind: 'alt', onclick: function (close) { close(); } }
       ]
@@ -836,6 +900,41 @@
       ]
     });
   }
+  function giftModal(pid) {
+    var p = personById(pid);
+    var s = D.sums[pid];
+    var count = h('input', { type: 'number', inputmode: 'numeric', min: '1', step: '1', value: '1' });
+    var note = h('input', { type: 'text', placeholder: 'For example: friend of the club', autocomplete: 'off', maxlength: '200' });
+    var chips = h('div', { class: 'chips' });
+    [1, 2, 3, 5, 10].forEach(function (n) {
+      chips.appendChild(h('button', {
+        type: 'button', class: 'chip', 'data-count': n,
+        onclick: function () { count.value = String(n); }
+      }, String(n)));
+    });
+    modal({
+      title: 'Give ' + p.name + ' free lessons',
+      body: h('div', { class: 'stack' },
+        h('p', { text: 'They use these up as they attend, then normal prices apply again. They have ' + s.freeLeft + ' free ' + (s.freeLeft === 1 ? 'lesson' : 'lessons') + ' left now.' }),
+        h('div', { class: 'field' }, h('span', { class: 'lbl', text: 'Quick pick' }), chips),
+        labelled('How many free lessons', count),
+        labelled('Reason (optional)', note, 'Shows in their history.')),
+      actions: [
+        { label: 'Give free lessons', onclick: function (close) {
+          var n = parseInt(count.value, 10);
+          var plan = L.planGift(p, D.entriesBy[pid] || [], n, note.value, D.classesById, Date.now());
+          if (!plan.ok) { toast(plan.reason); return; }
+          close();
+          enqueue(function () {
+            return opGift(pid, n, note.value).then(reload).then(function () {
+              toast('Gave ' + n + ' free ' + (n === 1 ? 'lesson' : 'lessons') + '. ' + D.sums[pid].freeLeft + ' left.');
+            }).catch(function (e) { toast(e.message); return reload(); });
+          });
+        } },
+        { label: 'Cancel', kind: 'alt', onclick: function (close) { close(); } }
+      ]
+    });
+  }
   function coverPrompt(pid) {
     var p = personById(pid);
     var s = D.sums[pid];
@@ -854,6 +953,84 @@
     });
   }
 
+  /* ---------- gi hire, grading, memberships ---------- */
+  function hireText(hire) {
+    if (hire.status === 'nocharge') return 'Gi hire, no charge';
+    if (hire.status === 'owed') return 'Gi hire owes ' + L.money(hire.priceCents);
+    if (hire.status === 'comped') return 'Gi hire comped';
+    return 'Gi hire paid ' + L.money(hire.paidCents || hire.priceCents);
+  }
+  function memberText(m) {
+    if (!m || !m.member) return 'Not recorded';
+    return 'Member' + (m.number ? ' · no. ' + m.number : '') + (m.expiry ? ' · expiry ' + fullDate(m.expiry) : '');
+  }
+  function recordHire(p, cls, method, okMsg) {
+    enqueue(function () {
+      return opHire(p.id, cls.id, method).then(reload).then(function () { toast(okMsg); }).catch(function (e) { toast(e.message); return reload(); });
+    });
+  }
+  function hireTap(p, cls) {
+    var s = D.sums[p.id];
+    var hire = s.hireByClass[cls.id];
+    if (hire) {
+      var paid = hire.status === 'paid' || hire.status === 'comped';
+      confirmBox('Remove gi hire?',
+        (paid ? 'This gi hire was recorded as ' + (hire.status === 'comped' ? 'comped' : 'paid ' + L.money(hire.paidCents || hire.priceCents) + (hire.method ? ' by ' + hire.method : '')) + '. Removing it undoes that. If you took money, refund it yourself. ' : '') +
+        'The lesson stays marked present, and the gi hire stays in the history as undone.',
+        'Remove gi hire', function () {
+          enqueue(function () {
+            return opReverse(p.id, hire.entry.id).then(reload).then(function () { toast('Gi hire removed.'); }).catch(function (e) { toast(e.message); return reload(); });
+          });
+        }, true);
+      return;
+    }
+    var att = s.attendByClass[cls.id];
+    if (!att) { toast('Mark ' + p.name + ' present first.'); return; }
+    var price = (att.cover === 'free' && !S.settings.giHireOnFree) ? 0 : S.settings.giHireCents;
+    if (price === 0) { recordHire(p, cls, '', 'Gi hire recorded, no charge on a free lesson.'); return; }
+    function pay(method) {
+      return function (close) { close(); recordHire(p, cls, method, method ? 'Gi hire ' + L.money(price) + ' paid by ' + method + '.' : p.name + ' owes ' + L.money(price) + ' for gi hire.'); };
+    }
+    modal({
+      title: 'Gi hire for ' + p.name,
+      focus: false,
+      body: h('p', { text: L.money(price) + ' for ' + L.dateLabel(cls.date) + '. How was it paid?' }),
+      actions: [
+        { label: 'Paid cash', onclick: pay('cash') },
+        { label: 'Paid bank', onclick: pay('bank') },
+        { label: 'Paid card', onclick: pay('card') },
+        { label: 'Not paid yet', kind: 'alt', onclick: pay('') },
+        { label: 'Cancel', kind: 'alt', onclick: function (close) { close(); } }
+      ]
+    });
+  }
+  function gradingModal(pid) {
+    var p = personById(pid);
+    var s = D.sums[pid];
+    var date = h('input', { type: 'date', value: L.localDate() });
+    var from = h('input', { type: 'text', value: s.lastGrade ? s.lastGrade.to : '', autocomplete: 'off' });
+    var to = h('input', { type: 'text', autocomplete: 'off' });
+    var note = h('input', { type: 'text', autocomplete: 'off' });
+    modal({
+      title: 'Add a judo grading for ' + p.name,
+      body: h('div', { class: 'stack' },
+        labelled('Date of grading', date), labelled('Grade from', from, 'Starts as their current grade. Clear it if they had none.'),
+        labelled('Grade to', to), labelled('Note (optional)', note)),
+      actions: [
+        { label: 'Save grading', onclick: function (close) {
+          var g = { date: date.value, from: from.value, to: to.value, note: note.value };
+          var plan = L.planGrade(p, D.entriesBy[pid] || [], g, Date.now());
+          if (!plan.ok) { toast(plan.reason); return; }
+          close();
+          enqueue(function () {
+            return opGrade(pid, g).then(reload).then(function () { toast('Grading saved.'); }).catch(function (e) { toast(e.message); return reload(); });
+          });
+        } },
+        { label: 'Cancel', kind: 'alt', onclick: function (close) { close(); } }
+      ]
+    });
+  }
+
   /* ---------- add and edit a person ---------- */
   function sel(options, value) {
     var el = h('select', {}, options.map(function (o) { return h('option', { value: o[0] }, o[1]); }));
@@ -865,10 +1042,13 @@
     var p = existing ? JSON.parse(JSON.stringify(existing)) : {
       name: '', rate: 'adult', under18: false, guardianName: '', guardianPhone: '', source: '',
       waiver: { signed: false, date: '', by: '' }, release: { signed: false, date: '', by: '' },
-      cardChecked: false, freeAllowed: S.settings.freeLessons, freeUsedBefore: 0, note: '', createdAt: Date.now()
+      sambo: { member: false, number: '', expiry: '' }, vaju: { member: false, number: '', expiry: '' },
+      cardChecked: false, trainsFree: false, freeAllowed: S.settings.freeLessons, freeUsedBefore: 0, note: '', createdAt: Date.now()
     };
     p.waiver = p.waiver || { signed: false, date: '', by: '' };
     p.release = p.release || { signed: false, date: '', by: '' };
+    p.sambo = p.sambo || { member: false, number: '', expiry: '' };
+    p.vaju = p.vaju || { member: false, number: '', expiry: '' };
 
     var name = h('input', { type: 'text', value: p.name, autocomplete: 'off', autocapitalize: 'words' });
     var rate = sel(L.RATES.map(function (r) { return [r, labelRate(r)]; }), p.rate);
@@ -879,6 +1059,7 @@
     var card = h('input', { type: 'checkbox', checked: p.cardChecked });
     var gBox = h('div', { class: 'group' }, labelled('Guardian name', gName), labelled('Guardian phone', gPhone));
     var cardBox = h('label', { class: 'check' }, card, 'Concession card checked');
+    var trainsFree = h('input', { type: 'checkbox', checked: p.trainsFree });
 
     function formGroup(title, f) {
       var signed = h('input', { type: 'checkbox', checked: f.signed });
@@ -893,8 +1074,26 @@
         read: function () { return { signed: signed.checked, date: signed.checked ? date.value : '', by: signed.checked ? by.value.trim() : '' }; }
       };
     }
+    function memberGroup(title, key, m) {
+      var on = h('input', { type: 'checkbox', checked: m.member });
+      var num = h('input', { type: 'text', value: m.number || '', autocomplete: 'off' });
+      var exp = h('input', { type: 'date', value: m.expiry || '' });
+      var detail = h('div', { class: 'two' }, labelled(title + ' number', num), labelled(title + ' expiry', exp));
+      function sync() {
+        detail.hidden = !on.checked;
+        if (on.checked && !exp.value) { var d = S.settings.membership[key]; exp.value = L.nextOccurrence(d.month, d.day); }
+      }
+      on.addEventListener('change', sync);
+      sync();
+      return {
+        el: h('div', { class: 'group' }, h('label', { class: 'check' }, on, title + ' member'), detail),
+        read: function () { return { member: on.checked, number: on.checked ? num.value.trim() : '', expiry: on.checked ? exp.value : '' }; }
+      };
+    }
     var waiver = formGroup('Injury waiver', p.waiver);
     var release = formGroup('Model release', p.release);
+    var samboG = memberGroup('Sambo Australia', 'sambo', p.sambo);
+    var vajuG = memberGroup('VAJU', 'vaju', p.vaju);
     var freeAllowed = h('input', { type: 'number', min: '0', step: '1', value: p.freeAllowed });
     var freeUsed = h('input', { type: 'number', min: '0', step: '1', value: p.freeUsedBefore || 0 });
     var note = h('textarea', { rows: '3', placeholder: 'Not for medical details', autocomplete: 'off' });
@@ -918,8 +1117,9 @@
         name: nm, rate: rate.value, under18: under.checked,
         guardianName: under.checked ? gName.value.trim() : '', guardianPhone: under.checked ? gPhone.value.trim() : '',
         source: source.value, waiver: w, release: r,
-        cardChecked: rate.value === 'concession' ? card.checked : false,
-        freeAllowed: fa, freeUsedBefore: fu, note: note.value.trim()
+        cardChecked: rate.value === 'concession' ? card.checked : false, trainsFree: trainsFree.checked,
+        freeAllowed: fa, freeUsedBefore: fu, note: note.value.trim(),
+        sambo: samboG.read(), vaju: vajuG.read()
       });
       if (isNew) delete out.id;
       function commit() {
@@ -938,11 +1138,15 @@
       return h('div', { class: 'stack' },
         h('section', { class: 'card' },
           labelled('Name', name), labelled('Rate', rate), h('label', { class: 'check' }, under, 'Under 18'), gBox, cardBox,
-          labelled('How they found the club', source)),
+          labelled('How they found the club', source),
+          p.trainsFree ? h('label', { class: 'check' }, trainsFree, 'Trains free, never charged (old setting)') : null,
+          p.trainsFree ? h('p', { class: 'hint', text: 'This is the old always-free tick. Untick it to put them back on normal prices. To give a set number of free lessons instead, use "Give free lessons" on their page.' }) : null),
         h('section', { class: 'card' }, h('h2', { text: 'Forms' }), waiver.el, release.el,
           h('p', { class: 'hint', text: 'For under-18s, a parent or guardian signs both forms and the record says who.' })),
+        h('section', { class: 'card' }, h('h2', { text: 'Memberships' }), samboG.el, vajuG.el,
+          h('p', { class: 'hint', text: 'Dates only. Nothing is blocked if a membership has lapsed. The expiry fills in from the defaults in Settings and can be changed per person.' })),
         h('section', { class: 'card' }, h('h2', { text: 'Free lessons' }),
-          h('div', { class: 'two' }, labelled('Free lessons allowed', freeAllowed, 'Everyone gets ' + S.settings.freeLessons + ' unless you change it.'),
+          h('div', { class: 'two' }, labelled('Free lessons allowed', freeAllowed, 'Everyone starts with ' + S.settings.freeLessons + '. To give extra later, use "Give free lessons" on their page. That keeps a record.'),
             labelled('Already used before this app', freeUsed, 'For people who started before today.'))),
         h('section', { class: 'card' }, labelled('Note', note)),
         h('button', { type: 'button', class: 'btn', onclick: save }, isNew ? 'Add person' : 'Save changes'));
@@ -953,7 +1157,7 @@
   /* ---------- settings, backup and restore ---------- */
   function makeBackup() {
     return loadAll().then(function (d) {
-      var payload = { app: APP, schema: 1, exportedAt: new Date().toISOString(), settings: S.settings, people: d.people, classes: d.classes, ledger: d.ledger };
+      var payload = { app: APP, schema: 2, exportedAt: new Date().toISOString(), settings: S.settings, people: d.people, classes: d.classes, ledger: d.ledger };
       return { json: JSON.stringify(payload, null, 2), name: 'portland-takedown-backup-' + L.localDate() + '.json' };
     });
   }
@@ -1006,6 +1210,102 @@
       }, true);
   }
 
+  /* ---------- printable attendance and spreadsheet export ---------- */
+  var MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  function attendanceData(from, to) {
+    var classes = S.classes.filter(function (c) { return c.date >= from && c.date <= to; })
+      .sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : a.id - b.id; });
+    var rows = S.people.map(function (p) {
+      var s = D.sums[p.id];
+      var marks = classes.map(function (c) { return !c.cancelled && !!s.attendByClass[c.id]; });
+      return { person: p, marks: marks };
+    });
+    return { classes: classes, rows: rows };
+  }
+  function checkRange(from, to) {
+    if (!L.parseDate(from) || !L.parseDate(to)) { toast('Pick both dates.'); return null; }
+    if (from > to) { toast('The start date is after the end date.'); return null; }
+    var data = attendanceData(from, to);
+    if (!data.classes.length) { toast('No classes were opened between those dates.'); return null; }
+    return data;
+  }
+  function openAttendanceSheet(from, to) {
+    var data = checkRange(from, to);
+    if (!data) return;
+    var held = data.classes.filter(function (c) { return !c.cancelled; }).length;
+    var cancelled = data.classes.length - held;
+    var sheet = pushSheet('Attendance', function () {
+      var wrap = h('div', { class: 'stack' });
+      wrap.appendChild(h('div', { class: 'print-head' },
+        h('h1', { class: 'print-title', text: 'Portland Takedown attendance' }),
+        h('p', { class: 'muted', text: L.dateLong(from) + ' to ' + L.dateLong(to) + ' · ' + held + (held === 1 ? ' class' : ' classes') + (cancelled ? ' (' + cancelled + ' cancelled)' : '') + ' · printed ' + L.dateLong(L.localDate()) })));
+      var months = [];
+      data.classes.forEach(function (c) { var k = c.date.slice(0, 7); if (months.indexOf(k) < 0) months.push(k); });
+      months.forEach(function (k) {
+        var idx = [];
+        data.classes.forEach(function (c, i) { if (c.date.slice(0, 7) === k) idx.push(i); });
+        var head = h('tr', {}, h('th', { text: 'Name' }), idx.map(function (i) {
+          var c = data.classes[i];
+          return h('th', {}, L.dateLabel(c.date).split(' ').slice(0, 2).join(' '), c.cancelled ? h('span', { class: 'cx', text: 'cancelled' }) : null);
+        }), h('th', { text: 'Total' }));
+        var body = data.rows.map(function (r) {
+          var n = 0;
+          var cells = idx.map(function (i) {
+            var c = data.classes[i];
+            if (c.cancelled) return h('td', { class: 'cx', text: '–' });
+            if (r.marks[i]) n++;
+            return h('td', { text: r.marks[i] ? '✓' : '' });
+          });
+          return h('tr', {}, h('th', { scope: 'row', text: r.person.name }), cells, h('td', { class: 'tot', text: String(n) }));
+        });
+        wrap.appendChild(h('section', { class: 'att-sec' }, h('h2', { text: MONTH_NAMES[parseInt(k.slice(5, 7), 10) - 1] + ' ' + k.slice(0, 4) }),
+          h('div', { class: 'att-wrap' }, h('table', { class: 'att' }, h('thead', {}, head), h('tbody', {}, body)))));
+      });
+      if (months.length > 1) {
+        wrap.appendChild(h('section', { class: 'att-sec' }, h('h2', { text: 'Whole period' }),
+          h('div', { class: 'att-wrap' }, h('table', { class: 'att' },
+            h('thead', {}, h('tr', {}, h('th', { text: 'Name' }), h('th', { text: 'Classes attended' }))),
+            h('tbody', {}, data.rows.map(function (r) {
+              return h('tr', {}, h('th', { scope: 'row', text: r.person.name }), h('td', { class: 'tot', text: String(r.marks.filter(Boolean).length) }));
+            }))))));
+      }
+      return wrap;
+    }, [{ label: 'Print', onclick: function () { window.print(); } }, { label: 'Close', kind: 'alt', onclick: popSheet }]);
+    sheet.el.classList.add('printable');
+  }
+  function csvCell(v) {
+    var t = String(v === null || v === undefined ? '' : v);
+    if (/^[=+\-@\t\r]/.test(t)) t = "'" + t;
+    return /[",\r\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+  }
+  function saveAttendanceCsv(from, to) {
+    var data = checkRange(from, to);
+    if (!data) return;
+    var cs = data.classes.filter(function (c) { return !c.cancelled; });
+    if (!cs.length) { toast('Every class in that range was cancelled, so there is nothing to export.'); return; }
+    var lines = [['Name'].concat(cs.map(function (c) { return c.date; }), ['Total']).map(csvCell).join(',')];
+    data.rows.forEach(function (r) {
+      var s = D.sums[r.person.id];
+      var total = 0;
+      var cells = [r.person.name];
+      cs.forEach(function (c) { var on = s.attendByClass[c.id] ? 1 : 0; total += on; cells.push(on); });
+      cells.push(total);
+      lines.push(cells.map(csvCell).join(','));
+    });
+    var file = new File(['﻿' + lines.join('\r\n') + '\r\n'], 'portland-takedown-attendance-' + from + '-to-' + to + '.csv', { type: 'text/csv' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      navigator.share({ files: [file], title: file.name }).then(function () {
+        toast('Done. The file has student names in it, so keep it somewhere private.');
+      }, function (e) {
+        if (e && e.name === 'AbortError') { toast('Cancelled. Nothing was saved.'); return; }
+        downloadFile(file); toast('Downloaded ' + file.name + '. Look in Downloads or the Files app.');
+      });
+      return;
+    }
+    downloadFile(file);
+    toast('Downloaded ' + file.name + '. Look in Downloads or the Files app.');
+  }
+
   function priceInput(cents) { return h('input', { type: 'text', inputmode: 'decimal', value: dollars(cents) }); }
   function viewSettings() {
     var v = h('div', { class: 'stack' });
@@ -1033,6 +1333,17 @@
         h('label', { class: 'btn alt', for: 'restoreFile' }, 'Restore from file')),
       fileInput, pasteDetails));
 
+    var firstOfMonth = L.localDate().slice(0, 8) + '01';
+    var lastOfMonth = L.localDate(new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0));
+    var fromIn = h('input', { type: 'date', value: firstOfMonth });
+    var toIn = h('input', { type: 'date', value: lastOfMonth });
+    v.appendChild(h('section', { class: 'card' }, h('h2', { text: 'Print or export attendance' }),
+      h('div', { class: 'two' }, labelled('From', fromIn), labelled('To', toIn)),
+      h('div', { class: 'btns' },
+        h('button', { type: 'button', class: 'btn', onclick: function () { openAttendanceSheet(fromIn.value, toIn.value); } }, 'Print attendance sheet'),
+        h('button', { type: 'button', class: 'btn alt', onclick: function () { saveAttendanceCsv(fromIn.value, toIn.value); } }, 'Save as spreadsheet (CSV)')),
+      h('p', { class: 'hint', text: 'Names, class dates and totals only. No money or form details. On the iPad, the print screen lets you pinch the preview to save it as a PDF.' })));
+
     var P = S.settings.prices;
     var free = h('input', { type: 'number', min: '0', step: '1', value: S.settings.freeLessons });
     var inputs = {
@@ -1040,11 +1351,17 @@
       juniorS: priceInput(P.junior.sessionCents), junior5: priceInput(P.junior.packs[5]), junior10: priceInput(P.junior.packs[10]), junior20: priceInput(P.junior.packs[20]),
       concS: priceInput(P.concession.sessionCents)
     };
+    var giPrice = priceInput(S.settings.giHireCents);
+    var giFree = h('input', { type: 'checkbox', checked: S.settings.giHireOnFree });
     function savePrices() {
       var out = JSON.parse(JSON.stringify(S.settings));
       var fl = parseInt(free.value, 10);
       if (!(fl >= 0)) { toast('Free lessons must be zero or more.'); return; }
       out.freeLessons = fl;
+      var gi = L.parseDollars(giPrice.value);
+      if (gi === null) { toast('Enter the gi hire price as dollars, for example 10.'); return; }
+      out.giHireCents = gi;
+      out.giHireOnFree = giFree.checked;
       var map = [['adult', 'sessionCents', inputs.adultS], ['adult', 5, inputs.adult5], ['adult', 10, inputs.adult10],
         ['junior', 'sessionCents', inputs.juniorS], ['junior', 5, inputs.junior5], ['junior', 10, inputs.junior10], ['junior', 20, inputs.junior20],
         ['concession', 'sessionCents', inputs.concS]];
@@ -1061,7 +1378,36 @@
         h('div', { class: 'group' }, h('h3', { text: 'Adult' }), labelled('Per session ($)', inputs.adultS), labelled('5-class pack ($)', inputs.adult5), labelled('10-class pack ($)', inputs.adult10)),
         h('div', { class: 'group' }, h('h3', { text: 'Junior' }), labelled('Per session ($)', inputs.juniorS), labelled('5-class pack ($)', inputs.junior5), labelled('10-class pack ($)', inputs.junior10), labelled('20-class pack ($)', inputs.junior20)),
         h('div', { class: 'group' }, h('h3', { text: 'Concession' }), labelled('Flat per session ($)', inputs.concS))),
+      h('div', { class: 'group' }, h('h3', { text: 'Gi hire' }), labelled('Gi hire price, any rate ($)', giPrice),
+        h('label', { class: 'check' }, giFree, 'Charge gi hire on free lessons')),
       h('button', { type: 'button', class: 'btn', onclick: savePrices }, 'Save prices')));
+
+    var MONTHS_LONG = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    function dateDefault(title, key) {
+      var cur = S.settings.membership[key];
+      var month = sel(MONTHS_LONG.map(function (m, i) { return [String(i + 1), m]; }), String(cur.month));
+      var day = h('input', { type: 'number', min: '1', max: '31', step: '1', value: cur.day });
+      return {
+        el: h('div', { class: 'group' }, h('h3', { text: title }), labelled(title + ' expiry month', month), labelled(title + ' expiry day', day)),
+        read: function () { return { month: parseInt(month.value, 10), day: parseInt(day.value, 10) }; }
+      };
+    }
+    var samboD = dateDefault('Sambo Australia', 'sambo');
+    var vajuD = dateDefault('VAJU', 'vaju');
+    function saveDefaults() {
+      var out = JSON.parse(JSON.stringify(S.settings));
+      var pairs = [['sambo', samboD.read()], ['vaju', vajuD.read()]];
+      for (var i = 0; i < pairs.length; i++) {
+        var m = pairs[i][1];
+        if (!(m.day >= 1) || m.day > new Date(2024, m.month, 0).getDate()) { toast('That day does not exist in that month.'); return; }
+        out.membership[pairs[i][0]] = m;
+      }
+      enqueue(function () { return opMeta([{ k: 'settings', v: out }]).then(reload).then(function () { toast('Membership defaults saved. Existing members keep their own dates.'); }); });
+    }
+    v.appendChild(h('section', { class: 'card' }, h('h2', { text: 'Membership expiry defaults' }),
+      h('p', { class: 'hint', text: 'Used to fill in the expiry date when you tick a membership for someone. Change them once Sambo Australia and VAJU confirm their dates.' }),
+      h('div', { class: 'two' }, samboD.el, vajuD.el),
+      h('button', { type: 'button', class: 'btn', onclick: saveDefaults }, 'Save defaults')));
 
     var deviceBox = h('dl', { class: 'status' });
     v.appendChild(h('section', { class: 'card' }, h('h2', { text: 'This iPad' }), deviceBox,

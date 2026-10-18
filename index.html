@@ -4,7 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Portland Takedown Roll Call</title>
-<meta name="theme-color" content="#0f2940">
+<meta name="theme-color" content="#0b2a4a">
+<meta name="color-scheme" content="light">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Roll Call">
@@ -13,45 +14,30 @@
 <link rel="apple-touch-icon" href="icon-180.png">
 <style>
 /* Layout: one working column on a phone; roll call rows run two across on a landscape iPad.
-   Palette comes from the club seal: navy, gold, cream, crimson. System fonts only, so it works offline. */
+   Colours are plain and high contrast on purpose: white cards, near-black text, one blue for everything you can tap,
+   green for present. One light theme only, so it looks the same whatever the iPad's dark mode is set to.
+   System fonts only, so it works offline. */
 :root {
-  --bg: #f3ead3;
-  --surface: #fbf6e6;
-  --fg: #10263d;
-  --muted: #4d5b6a;
-  --line: #d9c9a0;
-  --line-strong: #a89868;
-  --btn: #8c1f2f;
+  color-scheme: light;
+  --bg: #eef1f5;
+  --surface: #ffffff;
+  --fg: #111827;
+  --muted: #4b5563;
+  --line: #cbd2dc;
+  --line-strong: #6b7686;
+  --btn: #0b4fb3;
   --btn-fg: #ffffff;
-  --gold: #d5a040;
-  --good: #1e6b3a;
-  --good-bg: #e3efd9;
-  --bad: #a1262f;
-  --lock-bg: #0f2940;
-  --lock-fg: #f4e6bd;
-  --toast-bg: #10263d;
-  --toast-fg: #f4e6bd;
+  --focus: #0b4fb3;
+  --good: #146c2e;
+  --good-bg: #dcf3e2;
+  --bad: #b42318;
+  --lock-bg: #0b2a4a;
+  --lock-fg: #ffffff;
+  --toast-bg: #111827;
+  --toast-fg: #ffffff;
   --display: "Rockwell", "Rockwell Nova", "American Typewriter", Georgia, serif;
   --body: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0b1f33;
-    --surface: #112b45;
-    --fg: #f4e6bd;
-    --muted: #a9b6c4;
-    --line: #25445f;
-    --line-strong: #4a6a86;
-    --btn: #d5a040;
-    --btn-fg: #0b1f33;
-    --good: #6fcf97;
-    --good-bg: #153a2b;
-    --bad: #ff8a8a;
-    --toast-bg: #f4e6bd;
-    --toast-fg: #0b1f33;
-    color-scheme: dark;
-  }
 }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
@@ -87,24 +73,24 @@ p { margin: 0; }
   background: var(--btn); color: var(--btn-fg); font: 600 1.05rem var(--body); cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
-.btn.alt { background: transparent; color: var(--fg); border-color: var(--fg); }
-.btn.danger { background: transparent; color: var(--bad); border-color: var(--bad); }
+.btn.alt { background: #fff; color: var(--btn); border-color: var(--btn); }
+.btn.danger { background: #fff; color: var(--bad); border-color: var(--bad); }
 .btn.small { min-height: 44px; padding: 0 12px; font-size: .95rem; }
 .btn:disabled { opacity: .45; cursor: default; }
 .btn:focus-visible, .chip:focus-visible, .rowmain:focus-visible, .tab:focus-visible, summary:focus-visible,
-input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 3px solid var(--gold); outline-offset: 2px; }
+input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 .btns { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); }
 .pick { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
 
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
-.chip { min-height: 44px; padding: 0 14px; border-radius: 999px; border: 2px solid var(--line-strong); background: transparent; color: var(--fg); font: 600 .95rem var(--body); cursor: pointer; }
-.chip[aria-pressed="true"], .chip[aria-current="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.chip { min-height: 44px; padding: 0 14px; border-radius: 999px; border: 2px solid var(--btn); background: #fff; color: var(--btn); font: 600 .95rem var(--body); cursor: pointer; }
+.chip[aria-pressed="true"], .chip[aria-current="true"] { background: var(--btn); color: #fff; border-color: var(--btn); }
 
 .field { display: grid; gap: 6px; min-width: 0; }
 .field label, .lbl { font-weight: 600; }
 .hint { color: var(--muted); font-size: .88rem; }
 input[type=text], input[type=date], input[type=number], input[type=tel], input[type=password], input[type=search], select, textarea {
-  font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line-strong);
+  font: inherit; color: var(--fg); background: #fff; border: 2px solid var(--line-strong);
   border-radius: 10px; padding: 10px 12px; min-height: 48px; width: 100%; min-width: 0;
 }
 textarea { font-size: .9rem; }
@@ -114,23 +100,24 @@ textarea { font-size: .9rem; }
 .group { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: grid; gap: 10px; align-content: start; }
 
 .rows { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 380px), 1fr)); }
-.row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; background: var(--surface); border: 2px solid var(--line); border-radius: 14px; overflow: hidden; }
-.row.present { border-color: var(--good); background: var(--good-bg); }
+.row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; background: var(--surface); border: 2px solid var(--line-strong); border-radius: 14px; overflow: hidden; }
+.row.present { border-color: var(--good); background: var(--good-bg); border-width: 3px; }
 .rowmain { display: grid; gap: 2px; text-align: left; background: none; border: 0; color: inherit; font: inherit; padding: 12px 14px; min-height: 76px; cursor: pointer; -webkit-tap-highlight-color: transparent; align-content: center; min-width: 0; }
 .rname { font-weight: 700; font-size: 1.1rem; overflow-wrap: anywhere; }
 .rsub { color: var(--muted); font-size: .9rem; }
-.badge { font-size: .78rem; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); }
+.badge { font-size: .8rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 .present .badge { color: var(--good); }
-.rowside { display: grid; align-items: center; padding: 0 10px; }
+.rowside { display: grid; align-content: center; gap: 6px; padding: 8px 10px; }
+.btn[aria-pressed="true"] { background: var(--good); color: #fff; border-color: var(--good); }
 .filters { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); align-items: center; }
 
 .tabs {
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; display: grid; grid-template-columns: repeat(3, 1fr);
-  background: var(--surface); border-top: 1px solid var(--line-strong);
-  padding: 6px max(8px, env(safe-area-inset-right, 0px)) calc(6px + env(safe-area-inset-bottom, 0px)) max(8px, env(safe-area-inset-left, 0px));
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+  background: #fff; border-top: 2px solid var(--line-strong);
+  padding: 8px max(10px, env(safe-area-inset-right, 0px)) calc(8px + env(safe-area-inset-bottom, 0px)) max(10px, env(safe-area-inset-left, 0px));
 }
-.tab { min-height: 56px; border: 0; background: none; color: var(--muted); font: 700 .95rem var(--body); border-radius: 10px; cursor: pointer; border-top: 4px solid transparent; }
-.tab[aria-current="page"] { color: var(--fg); border-top-color: var(--gold); }
+.tab { min-height: 58px; border: 2px solid var(--btn); background: #fff; color: var(--btn); font: 700 1.05rem var(--body); border-radius: 12px; cursor: pointer; }
+.tab[aria-current="page"] { background: var(--btn); color: #fff; }
 
 .facts, .status { margin: 0; display: grid; }
 .facts > div, .st { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; padding: 9px 0; border-top: 1px solid var(--line); }
@@ -140,11 +127,11 @@ textarea { font-size: .9rem; }
 .st[data-s="no"] dd { color: var(--bad); }
 .st .h { grid-column: 1 / -1; font-size: .85rem; color: var(--muted); }
 
-.hist { list-style: none; margin: 0; padding: 0; display: grid; }
-.hist li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; padding: 10px 0; border-top: 1px solid var(--line); align-items: center; }
-.hist .t { font-weight: 600; }
+.hist, .glist { list-style: none; margin: 0; padding: 0; display: grid; }
+.hist li, .glist li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; padding: 10px 0; border-top: 1px solid var(--line); align-items: center; }
+.hist .t, .glist .t { font-weight: 600; }
 .hist .when { color: var(--muted); font-size: .82rem; grid-column: 1 / -1; }
-.hist .d { color: var(--muted); font-size: .9rem; }
+.hist .d, .glist .d { color: var(--muted); font-size: .9rem; }
 .hist .undone .t { text-decoration: line-through; color: var(--muted); }
 .hist .rev .t { color: var(--muted); font-weight: 500; }
 .owed { display: grid; gap: 8px; padding: 10px 0; border-top: 1px solid var(--line); }
@@ -164,17 +151,43 @@ textarea { font-size: .9rem; }
 .lockbox { width: min(360px, 100%); display: grid; gap: 14px; text-align: center; }
 .lockbox img { width: 96px; height: 96px; border-radius: 20px; margin: 0 auto; }
 .lockbox h1 { font: 700 1.5rem/1.15 var(--display); margin: 0; }
-.lockbox input { text-align: center; font-size: 1.6rem; letter-spacing: .3em; background: #fbf6e6; color: #10263d; border-color: #d5a040; }
-.lockbox .btn { background: #d5a040; border-color: #d5a040; color: #0f2940; }
+.lockbox input { text-align: center; font-size: 1.6rem; letter-spacing: .3em; background: #fff; color: #111827; border-color: #fff; }
+.lockbox .btn { background: #fff; border-color: #fff; color: #0b2a4a; }
 .lockbox .link { background: none; border: 0; color: var(--lock-fg); text-decoration: underline; font: inherit; min-height: 44px; cursor: pointer; }
 .lockbox .err { color: #ffb4b4; min-height: 1.3em; }
-.lockbox .hint { color: #b9c5d1; }
+.lockbox .hint { color: #d6e2f0; }
 
 .toast { position: fixed; left: max(12px, env(safe-area-inset-left, 0px)); right: max(12px, env(safe-area-inset-right, 0px)); bottom: calc(84px + env(safe-area-inset-bottom, 0px)); margin: 0 auto; max-width: 560px; background: var(--toast-bg); color: var(--toast-fg); padding: 14px 16px; border-radius: 12px; z-index: 70; box-shadow: 0 6px 24px rgba(0, 0, 0, .3); pointer-events: none; }
 details { border-top: 1px solid var(--line); padding-top: 12px; }
 summary { cursor: pointer; font-weight: 600; min-height: 36px; }
 .sr { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; }
 footer { color: var(--muted); font-size: .85rem; padding-top: 6px; }
+
+/* attendance sheet: on screen it scrolls sideways if it must; on paper it is plain black on white */
+.print-title { font: 700 1.3rem/1.2 var(--display); margin: 0 0 4px; }
+.att-sec { display: grid; gap: 8px; }
+.att-wrap { overflow-x: auto; }
+.att { border-collapse: collapse; width: 100%; font-size: .85rem; }
+.att th, .att td { border: 1px solid var(--line-strong); padding: 5px 7px; text-align: center; white-space: nowrap; }
+.att th:first-child, .att td:first-child { text-align: left; }
+.att thead th { background: var(--surface); }
+.att .cx { color: var(--muted); display: block; font-weight: 400; font-size: .75rem; }
+.att td.cx { display: table-cell; font-size: .85rem; }
+.att .tot { font-weight: 700; }
+@page { size: A4 landscape; margin: 12mm; }
+@media print {
+  body { background: #fff !important; color: #000 !important; padding: 0 !important; overflow: visible !important; font-size: 11pt; }
+  body > *:not(.sheet.printable) { display: none !important; }
+  .sheet.printable { position: static !important; inset: auto !important; overflow: visible !important; background: #fff !important; color: #000 !important; padding: 0 !important; }
+  .sheet.printable .sheet-head { display: none !important; }
+  .sheet.printable .sheet-body { max-width: none; padding-top: 0; }
+  .sheet.printable h1, .sheet.printable h2, .sheet.printable .muted, .att .cx { color: #000 !important; }
+  .att-wrap { overflow: visible; }
+  .att { font-size: 10pt; }
+  .att th, .att td { border: 1px solid #000; padding: 3px 5px; }
+  .att thead th { background: #eee !important; }
+  .att-sec { break-inside: avoid; page-break-inside: avoid; }
+}
 </style>
 </head>
 <body>
