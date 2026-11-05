@@ -6,7 +6,7 @@
 
   var L = window.Ledger;
   var APP = 'portland-takedown-roll-call';
-  var BUILD = 'Version 1.3';
+  var BUILD = 'Version 1.4';
   var EXPECTED_FILES = 8;
   var DB_NAME = 'pt-rollcall';
   var IDLE_LOCK_MS = 5 * 60 * 1000;
@@ -16,7 +16,7 @@
   var db = null;
   var S = {
     settings: L.normaliseSettings(null), people: [], classes: [], ledger: [], meta: {},
-    tab: 'roll', classId: null, rollQ: '', pQ: '', pSource: '', pNoWaiver: false, pNoRelease: false, pArchived: false, pEmergency: false,
+    tab: 'roll', classId: null, rollQ: '', pQ: '', pSource: '', pNoWaiver: false, pNoRelease: false, pArchived: false, pEmergency: false, pNoContact: false,
     locked: true, hiddenAt: 0, swError: '', dbError: '', opens: 0, first: 0, prev: null
   };
   var D = { classesById: {}, entriesBy: {}, sums: {} };
@@ -64,6 +64,26 @@
     if (!f || !f.signed) return 'Not on file';
     return 'Signed' + (f.date ? ' ' + fullDate(f.date) : '') + (f.by ? ' by ' + f.by : '');
   }
+
+  /* Emergency contacts. Shown only on a person's record and on the roll call emergency list.
+     Never printed and never in the spreadsheet export. */
+  function validPhone(s) {
+    var d = String(s || '').replace(/\D/g, '');
+    return /^[\d\s()+.\-]+$/.test(s) && d.length >= 6 && d.length <= 15;
+  }
+  function phoneLink(phone) {
+    var dial = String(phone || '').replace(/[^\d+]/g, '');
+    return dial ? h('a', { class: 'tel', href: 'tel:' + dial, text: phone }) : document.createTextNode(phone || '');
+  }
+  function contactOf(p) {
+    var c = p && p.emergencyContact;
+    return c && c.name && c.phone ? c : null;
+  }
+  function guardianOf(p) {
+    return p && p.under18 && p.guardianName && p.guardianPhone ? { name: p.guardianName, phone: p.guardianPhone } : null;
+  }
+  function hasSomeoneToCall(p) { return !!(contactOf(p) || guardianOf(p)); }
+  function byName(a, b) { var x = a.name.toLowerCase(), y = b.name.toLowerCase(); return x < y ? -1 : x > y ? 1 : 0; }
 
   var toastTimer;
   function toast(text) {
@@ -582,9 +602,11 @@
     v.appendChild(h('section', { class: 'card' },
       h('div', { class: 'chead' },
         h('div', {}, h('h2', { text: 'Roll call' }), h('p', { class: 'big2', text: L.dateLabel(cls.date) }), h('p', { class: 'muted', text: summary })),
-        cls.cancelled
-          ? h('button', { type: 'button', class: 'btn alt small', onclick: function () { enqueue(function () { return opReopenClass(cls.id).then(reload); }); } }, 'Reopen class')
-          : h('button', { type: 'button', class: 'btn alt small', onclick: function () { cancelClass(cls); } }, 'Cancel this class'))));
+        h('div', { class: 'acts' },
+          cls.cancelled
+            ? h('button', { type: 'button', class: 'btn alt small', onclick: function () { enqueue(function () { return opReopenClass(cls.id).then(reload); }); } }, 'Reopen class')
+            : [h('button', { type: 'button', class: 'btn alt small', onclick: function () { emergencySheet(cls); } }, 'Emergency contacts'),
+               h('button', { type: 'button', class: 'btn alt small', onclick: function () { cancelClass(cls); } }, 'Cancel this class')]))));
     if (cls.cancelled) return v;
 
     var search = h('input', { type: 'search', placeholder: 'Find a name', value: S.rollQ, 'aria-label': 'Find a name', autocomplete: 'off' });
@@ -628,6 +650,59 @@
     return v;
   }
 
+  /* ---------- emergency contacts ---------- */
+  function telFact(label, phone) {
+    return h('div', {}, h('dt', { text: label }), h('dd', {}, phone ? phoneLink(phone) : 'Not recorded'));
+  }
+  function contactCard(p) {
+    var rows = [];
+    if (p.under18 && (p.guardianName || p.guardianPhone)) {
+      rows.push(h('div', {}, h('dt', { text: 'Guardian' + (p.guardianName ? ': ' + p.guardianName : '') }),
+        h('dd', {}, p.guardianPhone ? phoneLink(p.guardianPhone) : 'No phone')));
+    }
+    var ec = contactOf(p);
+    if (ec) rows.push(h('div', {}, h('dt', { text: ec.name + (ec.relation ? ' (' + ec.relation + ')' : '') }), h('dd', {}, phoneLink(ec.phone))));
+    var none = !hasSomeoneToCall(p);
+    return h('section', { class: 'card ecard' },
+      h('div', { class: 'chead' },
+        h('span', { class: 'rname', text: p.name }),
+        p.under18 ? h('span', { class: 'rsub', text: 'Under 18' }) : null),
+      rows.length ? h('dl', { class: 'facts' }, rows) : null,
+      none ? h('p', { class: 'warn', text: 'Nobody on file to call.' }) : null,
+      none ? h('div', { class: 'acts' }, h('button', { type: 'button', class: 'btn alt small', onclick: function () { openPerson(p.id); } }, 'Open record')) : null);
+  }
+  function emergencySheet(cls) {
+    var q = '';
+    var sheet = pushSheet('Emergency contacts', function () {
+      var wrap = h('div', { class: 'stack' });
+      var present = S.people.filter(function (p) { return D.sums[p.id] && D.sums[p.id].attendByClass[cls.id]; }).sort(byName);
+      var presentIds = {};
+      present.forEach(function (p) { presentIds[p.id] = true; });
+      var nobody = present.filter(function (p) { return !hasSomeoneToCall(p); }).length;
+      wrap.appendChild(h('section', { class: 'card' },
+        h('p', { class: 'big2', text: L.dateLabel(cls.date) }),
+        h('p', { class: 'muted', text: present.length + ' present' + (nobody ? ' · ' + nobody + ' with nobody to call' : '') })));
+      if (!present.length) wrap.appendChild(h('p', { class: 'muted', text: 'Nobody is marked present yet. Search below to find anyone.' }));
+      present.forEach(function (p) { wrap.appendChild(contactCard(p)); });
+      var results = h('div', { class: 'stack' });
+      var search = h('input', { type: 'search', placeholder: 'Find someone else', 'aria-label': 'Find someone else', autocomplete: 'off', value: q });
+      function showResults() {
+        results.textContent = '';
+        var t = q.trim().toLowerCase();
+        if (!t) return;
+        var hits = S.people.filter(function (p) { return !p.archived && !presentIds[p.id] && p.name.toLowerCase().indexOf(t) >= 0; }).sort(byName);
+        if (!hits.length) results.appendChild(h('p', { class: 'muted', text: 'Nobody else matches that name.' }));
+        hits.forEach(function (p) { results.appendChild(contactCard(p)); });
+      }
+      search.addEventListener('input', function () { q = search.value; showResults(); });
+      wrap.appendChild(h('section', { class: 'card' }, h('h2', { text: 'Not marked present?' }), search));
+      wrap.appendChild(results);
+      showResults();
+      return wrap;
+    }, [{ label: 'Close', kind: 'alt', onclick: popSheet }]);
+    sheet.live = true;
+  }
+
   /* ---------- people ---------- */
   function viewPeople() {
     var v = h('div', { class: 'stack' });
@@ -642,6 +717,7 @@
     if (!nArch) S.pArchived = false;
     var showArch = h('input', { type: 'checkbox', checked: S.pArchived });
     var emergOnly = h('input', { type: 'checkbox', checked: S.pEmergency });
+    var noC = h('input', { type: 'checkbox', checked: S.pNoContact });
     var count = h('p', { class: 'muted small' });
     var list = h('div', { class: 'rows' });
     function fill() {
@@ -650,6 +726,7 @@
       var shown = S.people.filter(function (p) {
         if (p.archived && !S.pArchived) return false;
         if (S.pEmergency && !p.emergencyWorker) return false;
+        if (S.pNoContact && hasSomeoneToCall(p)) return false;
         if (q && p.name.toLowerCase().indexOf(q) < 0) return false;
         if (S.pSource && p.source !== S.pSource) return false;
         if (S.pNoWaiver && p.waiver && p.waiver.signed) return false;
@@ -675,12 +752,14 @@
     noR.addEventListener('change', function () { S.pNoRelease = noR.checked; fill(); });
     showArch.addEventListener('change', function () { S.pArchived = showArch.checked; fill(); });
     emergOnly.addEventListener('change', function () { S.pEmergency = emergOnly.checked; fill(); });
+    noC.addEventListener('change', function () { S.pNoContact = noC.checked; fill(); });
     v.appendChild(h('section', { class: 'card' },
       h('div', { class: 'pick' }, search, h('button', { type: 'button', class: 'btn', onclick: function () { openPersonForm(null); } }, 'Add person')),
       h('div', { class: 'filters' }, srcSel,
         h('label', { class: 'check' }, noW, 'No injury waiver'),
         h('label', { class: 'check' }, noR, 'No model release'),
         h('label', { class: 'check' }, emergOnly, 'Emergency workers only'),
+        h('label', { class: 'check' }, noC, 'No one to call in an emergency'),
         nArch ? h('label', { class: 'check' }, showArch, 'Show archived people') : null),
       count));
     v.appendChild(list);
@@ -713,6 +792,19 @@
         h('button', { type: 'button', class: 'btn alt', onclick: function () { giftModal(p.id); } }, 'Give free lessons'),
         h('button', { type: 'button', class: 'btn alt', onclick: function () { openPersonForm(p); } }, 'Edit details'))));
 
+    var ec = contactOf(p);
+    var ecFacts = [];
+    if (p.under18) {
+      ecFacts.push(fact('Guardian', p.guardianName || 'Not recorded'));
+      ecFacts.push(telFact('Guardian phone', p.guardianPhone));
+    }
+    ecFacts.push(fact('Emergency contact', ec ? ec.name + (ec.relation ? ' (' + ec.relation + ')' : '') : 'Not recorded'));
+    if (ec) ecFacts.push(telFact('Emergency contact phone', ec.phone));
+    wrap.appendChild(h('section', { class: 'card' }, h('h2', { text: 'Emergency contact' }),
+      h('dl', { class: 'facts' }, ecFacts),
+      hasSomeoneToCall(p) ? null : h('p', { class: 'warn', text: 'Nobody on file to call.' }),
+      h('div', { class: 'acts' }, h('button', { type: 'button', class: 'btn alt', onclick: function () { openPersonForm(p); } }, ec ? 'Edit emergency contact' : 'Add emergency contact'))));
+
     wrap.appendChild(h('section', { class: 'card' }, h('h2', { text: 'Forms' }),
       h('dl', { class: 'facts' },
         fact('Injury waiver', formText(p.waiver)),
@@ -741,10 +833,6 @@
 
     var about = [fact('Emergency worker', p.emergencyWorker ? 'Yes' + (p.cardChecked ? ', ID checked' : ', ID not checked') : 'No'),
       fact('Under 18', p.under18 ? 'Yes' : 'No')];
-    if (p.under18) {
-      about.push(fact('Guardian', p.guardianName || 'Not recorded'));
-      about.push(fact('Guardian phone', p.guardianPhone || 'Not recorded'));
-    }
     about.push(fact('How they found the club', labelSource(p.source)));
     wrap.appendChild(h('section', { class: 'card' }, h('h2', { text: 'About' }), h('dl', { class: 'facts' }, about),
       p.note ? h('p', {}, h('strong', { text: 'Note: ' }), p.note) : null));
@@ -804,7 +892,7 @@
     modal({
       title: 'Delete ' + p.name + ' for good?',
       body: h('div', { class: 'stack' },
-        h('p', { text: 'This removes ' + p.name + ' and all ' + es.length + (es.length === 1 ? ' entry' : ' entries') + ' recorded for them (' + s.attendedCount + (s.attendedCount === 1 ? ' class' : ' classes') + ' attended, plus any packs, gi hire and gradings). Nobody else is touched. It cannot be undone.' }),
+        h('p', { text: 'This removes ' + p.name + ' and all ' + es.length + (es.length === 1 ? ' entry' : ' entries') + ' recorded for them (' + s.attendedCount + (s.attendedCount === 1 ? ' class' : ' classes') + ' attended, plus any packs, gi hire and gradings), along with their contact details. Nobody else is touched. It cannot be undone.' }),
         h('p', { class: 'hint', text: 'If they have just left the club, use Archive instead, which keeps their records. If you are not sure, take a backup first in Settings.' }),
         labelled('Type DELETE to continue', typed)),
       actions: [
@@ -980,6 +1068,10 @@
     var gBox = h('div', { class: 'group' }, labelled('Guardian name', gName), labelled('Guardian phone', gPhone));
     var cardBox = h('label', { class: 'check' }, card, 'ID or card checked');
     var trainsFree = h('input', { type: 'checkbox', checked: p.trainsFree });
+    var ec0 = p.emergencyContact || { name: '', phone: '', relation: '' };
+    var ecName = h('input', { type: 'text', value: ec0.name || '', autocomplete: 'off', autocapitalize: 'words', maxlength: '80' });
+    var ecPhone = h('input', { type: 'tel', value: ec0.phone || '', autocomplete: 'off', maxlength: '30' });
+    var ecRel = h('input', { type: 'text', value: ec0.relation || '', autocomplete: 'off', autocapitalize: 'words', maxlength: '40', placeholder: 'For example: partner, parent, friend' });
 
     function formGroup(title, f) {
       var signed = h('input', { type: 'checkbox', checked: f.signed });
@@ -1033,7 +1125,11 @@
       var w = waiver.read(), r = release.read();
       if (under.checked && w.signed && !w.by) { toast('Say which parent or guardian signed the injury waiver.'); return; }
       if (under.checked && r.signed && !r.by) { toast('Say which parent or guardian signed the model release.'); return; }
+      var cn = ecName.value.trim(), cp = ecPhone.value.trim(), cr = ecRel.value.trim();
+      if ((cn || cp) && !(cn && cp)) { toast('For an emergency contact, enter both a name and a phone number, or leave both empty.'); return; }
+      if (cp && !validPhone(cp)) { toast('That phone number does not look right. Use digits, spaces, + or brackets.'); return; }
       var out = Object.assign({}, p, {
+        emergencyContact: { name: cn, phone: cp, relation: cn ? cr : '' },
         name: nm, rate: p.rate || 'adult', emergencyWorker: emerg.checked, under18: under.checked,
         guardianName: under.checked ? gName.value.trim() : '', guardianPhone: under.checked ? gPhone.value.trim() : '',
         source: source.value, waiver: w, release: r,
@@ -1062,6 +1158,10 @@
           labelled('How they found the club', source),
           h('label', { class: 'check' }, trainsFree, 'Free forever'),
           h('p', { class: 'hint', text: 'For people who never pay, like family. Their lessons still count as attended, and no free lesson or pack class is used. For just a set number of free lessons, use "Give free lessons" on their page instead.' })),
+        h('section', { class: 'card' }, h('h2', { text: 'Emergency contact' }),
+          h('div', { class: 'two' }, labelled('Emergency contact name', ecName), labelled('Emergency contact phone', ecPhone)),
+          labelled('Relationship (optional)', ecRel),
+          h('p', { class: 'hint', text: 'Someone to call if something goes wrong at training. For under-18s the guardian above is shown first, so add a second person here if you can. Ask before you save someone else’s number, and tell the person it is only used in an emergency.' })),
         h('section', { class: 'card' }, h('h2', { text: 'Forms' }), waiver.el, release.el,
           h('p', { class: 'hint', text: 'For under-18s, a parent or guardian signs both forms and the record says who.' })),
         h('section', { class: 'card' }, h('h2', { text: 'Memberships' }), samboG.el, vajuG.el,
@@ -1246,7 +1346,7 @@
     });
     v.appendChild(h('section', { class: 'card' }, h('h2', { text: 'Backup and restore' }),
       h('p', { class: 'muted', text: backupText(true) }),
-      h('p', { class: 'hint', text: 'A backup file holds student details. Save it only to your encrypted Google Drive folder.' }),
+      h('p', { class: 'hint', text: 'A backup file holds student details, including emergency contact numbers. Save it only to your encrypted Google Drive folder.' }),
       h('div', { class: 'btns' },
         h('button', { type: 'button', class: 'btn', onclick: saveBackup }, 'Save backup file'),
         h('button', { type: 'button', class: 'btn alt', onclick: function () { copyBackup(paste, pasteDetails); } }, 'Copy backup as text'),
@@ -1262,7 +1362,7 @@
       h('div', { class: 'btns' },
         h('button', { type: 'button', class: 'btn', onclick: function () { openAttendanceSheet(fromIn.value, toIn.value); } }, 'Print attendance sheet'),
         h('button', { type: 'button', class: 'btn alt', onclick: function () { saveAttendanceCsv(fromIn.value, toIn.value); } }, 'Save as spreadsheet (CSV)')),
-      h('p', { class: 'hint', text: 'Names, class dates and totals only. No form details. On the iPad, the print screen lets you pinch the preview to save it as a PDF.' })));
+      h('p', { class: 'hint', text: 'Names, class dates and totals only. No form details or contact numbers. On the iPad, the print screen lets you pinch the preview to save it as a PDF.' })));
 
     var free = h('input', { type: 'number', min: '0', step: '1', value: S.settings.freeLessons });
     function saveFree() {
